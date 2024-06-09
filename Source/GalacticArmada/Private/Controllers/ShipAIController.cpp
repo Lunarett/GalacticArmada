@@ -1,9 +1,10 @@
 #include "Controllers/ShipAIController.h"
-#include "ChaosVehicleMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Pawns/ShipPawn.h"
 #include "DrawDebugHelpers.h"
+#include "Components/CannonComponent.h"
+#include "Components/ShipMovementComponent.h"
 
 void AShipAIController::BeginPlay()
 {
@@ -28,14 +29,10 @@ void AShipAIController::Tick(float DeltaSeconds)
     Super::Tick(DeltaSeconds);
     if (!IsValid(TargetShipPawn) || !IsValid(ControlledShipPawn)) return;
 
-    // Set the default target rotation to the target ship rotation
     TargetRotation = GetTargetShipRotation();
-
-    // Update collision avoidance to modify the target rotation if necessary
     UpdateCollisionAvoidance();
-
-    // Update movement based on the modified target rotation
     UpdateMovement(DeltaSeconds);
+    UpdateFiring();
 }
 
 FRotator AShipAIController::GetTargetShipRotation() const
@@ -49,44 +46,42 @@ FRotator AShipAIController::GetTargetShipRotation() const
 
 void AShipAIController::UpdateCollisionAvoidance()
 {
+    if (!IsValid(ControlledShipPawn)) return;
     const FVector CollisionLocation = ControlledShipPawn->GetClosestCollisionLocation();
     if (CollisionLocation == FVector::ZeroVector) return;
 
     const FVector PawnLocation = ControlledShipPawn->GetActorLocation();
-    float DistanceToCollision = FVector::Distance(PawnLocation, CollisionLocation);
+    const float DistanceToCollision = FVector::Distance(PawnLocation, CollisionLocation);
 
     if (DistanceToCollision < ControlledShipPawn->ObstacleAvoidanceDistance)
     {
-        // Calculate avoidance direction
-        FVector AwayFromCollisionDirection = (PawnLocation - CollisionLocation).GetSafeNormal();
+        // Calculate Avoidance Direction
+        const FVector AwayFromCollisionDirection = (PawnLocation - CollisionLocation).GetSafeNormal();
 
         // Calculate the strength of the avoidance based on distance to collision
-        float AvoidanceStrength = UKismetMathLibrary::MapRangeClamped(DistanceToCollision, 0.0f, ControlledShipPawn->ObstacleAvoidanceDistance, 1.0f, 0.0f);
+        const float AvoidanceStrength = UKismetMathLibrary::MapRangeClamped(DistanceToCollision, 0.0f, ControlledShipPawn->ObstacleAvoidanceDistance, ControlledShipPawn->MaxAvoidanceStrength, ControlledShipPawn->MinAvoidanceStrength);
 
         // Adjust the target rotation by blending it with the avoidance direction
-        FRotator AvoidanceRotation = UKismetMathLibrary::MakeRotFromX(AwayFromCollisionDirection) * AvoidanceStrength;
+        const FRotator AvoidanceRotation = UKismetMathLibrary::MakeRotFromX(AwayFromCollisionDirection) * AvoidanceStrength;
         TargetRotation = FMath::Lerp(TargetRotation, TargetRotation + AvoidanceRotation, AvoidanceStrength);
 
-        // Debug visuals for collision avoidance
-        DrawDebugLine(GetWorld(), PawnLocation, CollisionLocation, FColor::Red, false, 0.0f, 0, 50.0f);
-        DrawDebugSphere(GetWorld(), CollisionLocation, 200.0f, 12, FColor::Red, false, 0.0f, 0, 30.0f);
+        if (bEnableAvoidanceDebug)
+        {
+            DrawDebugLine(GetWorld(), ControlledShipPawn->GetActorLocation(), CollisionLocation, FColor::Red, false, 0.0f, 0, 60);
+            DrawDebugSphere(GetWorld(), CollisionLocation, 300, 12, FColor::Red, false, 0.0f, 0, 30);
+        }
     }
 }
 
-void AShipAIController::UpdateMovement(float DeltaSeconds)
+void AShipAIController::UpdateMovement(float DeltaSeconds) const
 {
     if (!ControlledShipPawn) return;
 
-    // Apply the updated target rotation to the ship's movement component
-    ControlledShipPawn->GetVehicleMovementComponent()->SetRollInput(RotationToInputAxis(TargetRotation.Roll, 180.0f));
-    ControlledShipPawn->GetVehicleMovementComponent()->SetPitchInput(-RotationToInputAxis(TargetRotation.Pitch, 90.0f));
-    ControlledShipPawn->GetVehicleMovementComponent()->SetYawInput(RotationToInputAxis(TargetRotation.Yaw, 180.0f));
-    ControlledShipPawn->GetVehicleMovementComponent()->SetThrottleInput(IsInRange() ? 1 : 0);
-
-    // Debug visual for the final movement direction
-    FVector PawnLocation = ControlledShipPawn->GetActorLocation();
-    FVector ForwardVector = ControlledShipPawn->GetActorForwardVector();
-    DrawDebugLine(GetWorld(), PawnLocation, PawnLocation + ForwardVector * 500.0f, FColor::Blue, false, 0.0f, 0, 50.0f);
+    // Apply Target Rotation
+    ControlledShipPawn->GetShipMovementComponent()->SetRollInput(RotationToInputAxis(TargetRotation.Roll, 180.0f));
+    ControlledShipPawn->GetShipMovementComponent()->SetPitchInput(-RotationToInputAxis(TargetRotation.Pitch, 90.0f));
+    ControlledShipPawn->GetShipMovementComponent()->SetYawInput(RotationToInputAxis(TargetRotation.Yaw, 180.0f));
+    ControlledShipPawn->GetShipMovementComponent()->SetThrustInput(IsInRange() ? 1.0f : -1.0f);
 }
 
 float AShipAIController::RotationToInputAxis(float Value, float RotVal)
@@ -98,4 +93,30 @@ bool AShipAIController::IsInRange() const
 {
     const float Distance = FVector::Distance(ControlledShipPawn->GetActorLocation(), TargetShipPawn->GetActorLocation());
     return Distance > ControlledShipPawn->StoppingDistance;
+}
+
+void AShipAIController::UpdateFiring() const
+{
+    if (!ControlledShipPawn || !TargetShipPawn) return;
+
+    const float DistanceToTarget = FVector::Distance(ControlledShipPawn->GetActorLocation(), TargetShipPawn->GetActorLocation());
+
+    if (DistanceToTarget <= ControlledShipPawn->PrimaryFireRange)
+    {
+        // Fire Primary Cannons
+        ControlledShipPawn->GetCannonComponent()->BeginCannonFire(0);
+        ControlledShipPawn->GetCannonComponent()->EndCannonFire(1);
+    }
+    else if (DistanceToTarget <= ControlledShipPawn->SecondaryFireRange)
+    {
+        // Fire Secondary Cannons
+        ControlledShipPawn->GetCannonComponent()->BeginCannonFire(1);
+        ControlledShipPawn->GetCannonComponent()->EndCannonFire(0);
+    }
+    else
+    {
+        // Stop All Fire
+        ControlledShipPawn->GetCannonComponent()->EndCannonFire(0);
+        ControlledShipPawn->GetCannonComponent()->EndCannonFire(1);
+    }
 }

@@ -21,13 +21,19 @@ protected:
 	UPROPERTY(BlueprintReadOnly)
 	FRotator TargetRotation;
 
+	UPROPERTY(EditDefaultsOnly, Category = "AI Debug")
+	bool bEnableAvoidanceDebug = true;
+
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 
 private:
+	FTimerHandle CollisionAvoidanceTimerHandle;
+	
 	FRotator GetTargetShipRotation() const;
-	void UpdateMovement(float DeltaSeconds);
+	void UpdateMovement(float DeltaSeconds) const;
 	void UpdateCollisionAvoidance();
+	void UpdateFiring() const;
 	static float RotationToInputAxis(float Value, float RotVal);
 	bool IsInRange() const;
 };

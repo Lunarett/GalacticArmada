@@ -3,6 +3,8 @@
 #include "Components/SphereComponent.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
+#include "Camera/CameraShakeBase.h"
+#include "GameFramework/PlayerController.h"
 
 AProjectileBase::AProjectileBase()
 {
@@ -36,6 +38,25 @@ void AProjectileBase::OnOverlapBegin(UPrimitiveComponent* OverlappedComp, AActor
         UNiagaraFunctionLibrary::SpawnSystemAtLocation(GetWorld(), ImpactEffect, GetActorLocation());
     }
 
-    // Destroy Projectile Actor
+    // Play Camera Shake
+    if (ImpactCameraShake)
+    {
+        APawn* InstigatingPawn = GetInstigator();
+        if (InstigatingPawn)
+        {
+            APlayerController* PlayerController = Cast<APlayerController>(InstigatingPawn->GetController());
+            if (PlayerController)
+            {
+                PlayerController->ClientStartCameraShake(ImpactCameraShake);
+            }
+        }
+    }
+
+    // Set a timer to destroy the projectile after a delay
+    GetWorld()->GetTimerManager().SetTimer(DestroyTimerHandle, this, &AProjectileBase::DestroyProjectile, DestroyDelay);
+}
+
+void AProjectileBase::DestroyProjectile()
+{
     Destroy();
 }

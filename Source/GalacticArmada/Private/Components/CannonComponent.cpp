@@ -1,12 +1,24 @@
 #include "Components/CannonComponent.h"
+#include "NiagaraFunctionLibrary.h"
+#include "TimerManager.h"
 #include "Actors/ProjectileBase.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "GameFramework/Actor.h"
-#include "TimerManager.h"
+#include "Kismet/GameplayStatics.h"
 
 UCannonComponent::UCannonComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
+
+	if (GetOwner())
+	{
+		ProjectileSpawnParams.Owner = GetOwner();
+		PawnOwner = Cast<APawn>(GetOwner());
+		if (PawnOwner)
+		{
+			ProjectileSpawnParams.Instigator = PawnOwner;
+		}
+	}
 }
 
 void UCannonComponent::BeginPlay()
@@ -34,7 +46,7 @@ void UCannonComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	Super::EndPlay(EndPlayReason);
 
-	// Clear all timers on end play
+	// Clear All Timers
 	for (FTimerHandle& TimerHandle : AutomaticFireTimers)
 	{
 		GetWorld()->GetTimerManager().ClearTimer(TimerHandle);
@@ -45,7 +57,7 @@ void UCannonComponent::BeginCannonFire(int32 CannonIndex)
 {
 	if (!CannonFirePropertiesArray.IsValidIndex(CannonIndex))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Invalid CannonIndex: %d"), CannonIndex);
+		UE_LOG(LogTemp, Warning, TEXT("CannonComponent: Failed to fire, Invalid CannonIndex: %d"), CannonIndex);
 		return;
 	}
 
@@ -61,15 +73,7 @@ void UCannonComponent::BeginCannonFire(int32 CannonIndex)
 	}
 	else
 	{
-		switch (CannonFireProps.CannonFireMode)
-		{
-		case ECannonFireMode::All:
-			FireAllCannons(CannonFireProps);
-			break;
-		case ECannonFireMode::Sequential:
-			FireSequentialCannon(CannonFireProps, SequentialCannonIndices[CannonIndex]);
-			break;
-		}
+		FireCannon(CannonIndex);
 	}
 }
 
@@ -79,6 +83,32 @@ void UCannonComponent::EndCannonFire(int32 CannonIndex)
 	{
 		StopAutomaticFire(CannonIndex);
 	}
+}
+
+void UCannonComponent::FireCannon(int32 CannonIndex)
+{
+	if (!CannonFirePropertiesArray.IsValidIndex(CannonIndex)) return;
+
+	const FCannonFireProperties& CannonFireProps = CannonFirePropertiesArray[CannonIndex];
+
+	switch (CannonFireProps.CannonFireMode)
+	{
+	case ECannonFireMode::All:
+		FireAllCannons(CannonFireProps);
+		break;
+	case ECannonFireMode::Sequential:
+		FireSequentialCannon(CannonFireProps, SequentialCannonIndices[CannonIndex]);
+		break;
+	}
+
+	// Play Fire Camera Shake
+	if (FireCameraShake)
+	{
+		UGameplayStatics::PlayWorldCameraShake(this, FireCameraShake, GetOwner()->GetActorLocation(), 0.0f, 1000.0f);
+	}
+
+	// Broadcast Fire Event
+	OnCannonFired.Broadcast(CannonIndex);
 }
 
 void UCannonComponent::FireAllCannons(const FCannonFireProperties& CannonFireProps) const
@@ -91,7 +121,14 @@ void UCannonComponent::FireAllCannons(const FCannonFireProperties& CannonFirePro
 		FTransform SocketTransform = Socket->GetSocketTransform(OwnerSkeletalMeshComponent);
 		if (UWorld* World = GetWorld())
 		{
-			World->SpawnActor<AProjectileBase>(CannonFireProps.ProjectileClass, SocketTransform.GetLocation(), SocketTransform.GetRotation().Rotator());
+			// Spawn Projectile
+			World->SpawnActor<AProjectileBase>(CannonFireProps.ProjectileClass, SocketTransform.GetLocation(), SocketTransform.GetRotation().Rotator(), ProjectileSpawnParams);
+
+			// Spawn Muzzle Effect
+			if (CannonFireProps.MuzzleParticleEffect)
+			{
+				UNiagaraFunctionLibrary::SpawnSystemAttached(CannonFireProps.MuzzleParticleEffect, OwnerSkeletalMeshComponent, SocketName, FVector::ZeroVector, FRotator::ZeroRotator, EAttachLocation::KeepRelativeOffset, true);
+			}
 		}
 	}
 }
@@ -108,14 +145,18 @@ void UCannonComponent::FireSequentialCannon(const FCannonFireProperties& CannonF
 		const FTransform SocketTransform = Socket->GetSocketTransform(OwnerSkeletalMeshComponent);
 		if (UWorld* World = GetWorld())
 		{
-			FActorSpawnParameters SpawnParams;
-			SpawnParams.Owner = GetOwner();
-			SpawnParams.Instigator = Cast<APawn>(GetOwner());
-			World->SpawnActor<AProjectileBase>(CannonFireProps.ProjectileClass, SocketTransform.GetLocation(), SocketTransform.GetRotation().Rotator(), SpawnParams);
+			// Spawn Projectile
+			World->SpawnActor<AProjectileBase>(CannonFireProps.ProjectileClass, SocketTransform.GetLocation(), SocketTransform.GetRotation().Rotator(), ProjectileSpawnParams);
+
+			// Spawn Muzzle Effect
+			if (CannonFireProps.MuzzleParticleEffect)
+			{
+				UNiagaraFunctionLibrary::SpawnSystemAttached(CannonFireProps.MuzzleParticleEffect, OwnerSkeletalMeshComponent, SocketName, FVector::ZeroVector, FRotator::ZeroRotator, EAttachLocation::KeepRelativeOffset, true);
+			}
 		}
 	}
 
-	// Increment and loop the index
+	// Increment Index
 	CurrentCannonIndex = (CurrentCannonIndex + 1) % CannonFireProps.FireLocationSocketNames.Num();
 }
 
@@ -124,11 +165,15 @@ void UCannonComponent::StartAutomaticFire(int32 CannonIndex)
 	if (AutomaticFireTimers[CannonIndex].IsValid()) return;
 
 	const FCannonFireProperties& CannonFireProps = CannonFirePropertiesArray[CannonIndex];
+	const float TimeBetweenShots = 60 / CannonFireProps.FireRate;
+	const float FirstDelay = FMath::Max(GetWorld()->GetTimeSeconds() + TimeBetweenShots - GetWorld()->TimeSeconds, 0.0f);
+
 	GetWorld()->GetTimerManager().SetTimer(
 		AutomaticFireTimers[CannonIndex],
-		FTimerDelegate::CreateUObject(this, &UCannonComponent::AutomaticFire, CannonIndex),
-		CannonFireProps.FireRate,
-		true
+		FTimerDelegate::CreateUObject(this, &UCannonComponent::FireCannon, CannonIndex),
+		TimeBetweenShots,
+		true,
+		FirstDelay
 	);
 }
 
@@ -137,31 +182,5 @@ void UCannonComponent::StopAutomaticFire(int32 CannonIndex)
 	if (AutomaticFireTimers[CannonIndex].IsValid())
 	{
 		GetWorld()->GetTimerManager().ClearTimer(AutomaticFireTimers[CannonIndex]);
-	}
-}
-
-void UCannonComponent::AutomaticFire(int32 CannonIndex)
-{
-	if (!CannonFirePropertiesArray.IsValidIndex(CannonIndex))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("Invalid CannonIndex for automatic fire: %d"), CannonIndex);
-		return;
-	}
-
-	const FCannonFireProperties& CannonFireProps = CannonFirePropertiesArray[CannonIndex];
-	if (!CannonFireProps.Enabled || !OwnerSkeletalMeshComponent)
-	{
-		StopAutomaticFire(CannonIndex);
-		return;
-	}
-
-	switch (CannonFireProps.CannonFireMode)
-	{
-	case ECannonFireMode::All:
-		FireAllCannons(CannonFireProps);
-		break;
-	case ECannonFireMode::Sequential:
-		FireSequentialCannon(CannonFireProps, SequentialCannonIndices[CannonIndex]);
-		break;
 	}
 }

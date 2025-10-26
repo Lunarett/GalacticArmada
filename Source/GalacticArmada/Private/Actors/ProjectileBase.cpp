@@ -24,10 +24,20 @@ AProjectileBase::AProjectileBase()
     ProjectileMovementComponent->ProjectileGravityScale = 0.0f;
 }
 
+void AProjectileBase::BeginPlay()
+{
+    Super::BeginPlay();
+
+    // Set a timer to destroy the projectile after a delay
+    GetWorld()->GetTimerManager().SetTimer(DestroyTimerHandle, this, &AProjectileBase::DestroyProjectile, DestroyDelay);
+}
+
 void AProjectileBase::OnOverlapBegin(UPrimitiveComponent* OverlappedComp, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
 {
-    // Check Null and Ignore Self
-    if (!OtherActor || !OtherComp || OtherActor == GetOwner()) return;
+    if (!OtherActor || !OtherComp || OtherActor == GetOwner())
+    {
+        return;
+    }
 
     // Add Damage
     UGameplayStatics::ApplyPointDamage(OtherActor, Damage, GetActorLocation(), SweepResult, GetInstigatorController(), this, nullptr);
@@ -52,8 +62,7 @@ void AProjectileBase::OnOverlapBegin(UPrimitiveComponent* OverlappedComp, AActor
         }
     }
 
-    // Set a timer to destroy the projectile after a delay
-    GetWorld()->GetTimerManager().SetTimer(DestroyTimerHandle, this, &AProjectileBase::DestroyProjectile, DestroyDelay);
+    DestroyProjectile();
 }
 
 void AProjectileBase::DestroyProjectile()

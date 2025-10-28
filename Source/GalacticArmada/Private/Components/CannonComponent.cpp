@@ -30,7 +30,7 @@ void UCannonComponent::BeginPlay()
 	{
 		OwnerSkeletalMeshComponent = Owner->FindComponentByClass<USkeletalMeshComponent>();
 	}
-	
+
 	// Initialize Sequential Cannon Mode
 	SequentialCannonIndices.SetNum(CannonFirePropertiesArray.Num());
 	for (int32 i = 0; i < SequentialCannonIndices.Num(); ++i)
@@ -87,7 +87,10 @@ void UCannonComponent::EndCannonFire(int32 CannonIndex)
 
 void UCannonComponent::FireCannon(int32 CannonIndex)
 {
-	if (!CannonFirePropertiesArray.IsValidIndex(CannonIndex)) return;
+	if (!CannonFirePropertiesArray.IsValidIndex(CannonIndex))
+	{
+		return;
+	}
 
 	const FCannonFireProperties& CannonFireProps = CannonFirePropertiesArray[CannonIndex];
 
@@ -122,20 +125,28 @@ void UCannonComponent::FireAllCannons(const FCannonFireProperties& CannonFirePro
 		if (UWorld* World = GetWorld())
 		{
 			// Spawn Projectile
-			World->SpawnActor<AProjectileBase>(CannonFireProps.ProjectileClass, SocketTransform.GetLocation(), SocketTransform.GetRotation().Rotator(), ProjectileSpawnParams);
+			World->SpawnActor<AProjectileBase>(CannonFireProps.ProjectileClass, SocketTransform.GetLocation(),
+			                                   SocketTransform.GetRotation().Rotator(), ProjectileSpawnParams);
 
 			// Spawn Muzzle Effect
 			if (CannonFireProps.MuzzleParticleEffect)
 			{
-				UNiagaraFunctionLibrary::SpawnSystemAttached(CannonFireProps.MuzzleParticleEffect, OwnerSkeletalMeshComponent, SocketName, FVector::ZeroVector, FRotator::ZeroRotator, EAttachLocation::KeepRelativeOffset, true);
+				UNiagaraFunctionLibrary::SpawnSystemAttached(CannonFireProps.MuzzleParticleEffect,
+				                                             OwnerSkeletalMeshComponent, SocketName,
+				                                             FVector::ZeroVector, FRotator::ZeroRotator,
+				                                             EAttachLocation::KeepRelativeOffset, true);
 			}
 		}
 	}
 }
 
-void UCannonComponent::FireSequentialCannon(const FCannonFireProperties& CannonFireProps, int32& CurrentCannonIndex) const
+void UCannonComponent::FireSequentialCannon(const FCannonFireProperties& CannonFireProps,
+                                            int32& CurrentCannonIndex) const
 {
-	if (CannonFireProps.FireLocationSocketNames.Num() == 0) return;
+	if (CannonFireProps.FireLocationSocketNames.Num() == 0)
+	{
+		return;
+	}
 
 	const FName& SocketName = CannonFireProps.FireLocationSocketNames[CurrentCannonIndex];
 	const USkeletalMeshSocket* Socket = OwnerSkeletalMeshComponent->GetSocketByName(SocketName);
@@ -146,12 +157,16 @@ void UCannonComponent::FireSequentialCannon(const FCannonFireProperties& CannonF
 		if (UWorld* World = GetWorld())
 		{
 			// Spawn Projectile
-			World->SpawnActor<AProjectileBase>(CannonFireProps.ProjectileClass, SocketTransform.GetLocation(), SocketTransform.GetRotation().Rotator(), ProjectileSpawnParams);
+			World->SpawnActor<AProjectileBase>(CannonFireProps.ProjectileClass, SocketTransform.GetLocation(),
+			                                   SocketTransform.GetRotation().Rotator(), ProjectileSpawnParams);
 
 			// Spawn Muzzle Effect
 			if (CannonFireProps.MuzzleParticleEffect)
 			{
-				UNiagaraFunctionLibrary::SpawnSystemAttached(CannonFireProps.MuzzleParticleEffect, OwnerSkeletalMeshComponent, SocketName, FVector::ZeroVector, FRotator::ZeroRotator, EAttachLocation::KeepRelativeOffset, true);
+				UNiagaraFunctionLibrary::SpawnSystemAttached(CannonFireProps.MuzzleParticleEffect,
+				                                             OwnerSkeletalMeshComponent, SocketName,
+				                                             FVector::ZeroVector, FRotator::ZeroRotator,
+				                                             EAttachLocation::KeepRelativeOffset, true);
 			}
 		}
 	}
@@ -162,11 +177,15 @@ void UCannonComponent::FireSequentialCannon(const FCannonFireProperties& CannonF
 
 void UCannonComponent::StartAutomaticFire(int32 CannonIndex)
 {
-	if (AutomaticFireTimers[CannonIndex].IsValid()) return;
+	if (AutomaticFireTimers[CannonIndex].IsValid())
+	{
+		return;
+	}
 
 	const FCannonFireProperties& CannonFireProps = CannonFirePropertiesArray[CannonIndex];
 	const float TimeBetweenShots = 60 / CannonFireProps.FireRate;
-	const float FirstDelay = FMath::Max(GetWorld()->GetTimeSeconds() + TimeBetweenShots - GetWorld()->TimeSeconds, 0.0f);
+	const float FirstDelay = FMath::Max(GetWorld()->GetTimeSeconds() + TimeBetweenShots - GetWorld()->TimeSeconds,
+	                                    0.0f);
 
 	GetWorld()->GetTimerManager().SetTimer(
 		AutomaticFireTimers[CannonIndex],

@@ -18,23 +18,23 @@ public:
 	AProjectileBase();
 
 protected:
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Movement")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement")
 	UProjectileMovementComponent* ProjectileMovementComponent;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Collision")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Collision")
 	USphereComponent* CollisionComponent;
     
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage")
 	float Damage = 10.0f;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Impact Effects")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Impact Effects")
 	UNiagaraSystem* ImpactEffect;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Impact Effects")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Impact Effects")
 	TSubclassOf<UCameraShakeBase> ImpactCameraShake;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Lifetime")
-	float DestroyDelay = 2.0f;  // Delay before destroying the projectile
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Lifetime")
+	float DestroyDelay = 2.0f;
 
 	FTimerHandle DestroyTimerHandle;
 

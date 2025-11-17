@@ -63,7 +63,7 @@ void UShipMovementComponent::SetRollInput(float InputValue)
 	CurrentRollInput = FMath::Clamp(InputValue, -1.0f, 1.0f);
 }
 
-void UShipMovementComponent::SetThrustInput(float InputValue)
+void UShipMovementComponent::SetThrottleInput(float InputValue)
 {
 	CurrentThrustInput = FMath::Clamp(InputValue, -1.0f, 1.0f);
 }

@@ -8,9 +8,9 @@ public class GalacticArmada : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "AIModule" });
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "AIModule", "EnhancedInput" });
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "Niagara", "EnhancedInput" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "Niagara", "EnhancedInput", "UMG" });
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });

@@ -12,10 +12,11 @@ class GALACTICARMADA_API UShipMovementComponent : public UMovementComponent
 {
 	GENERATED_BODY()
 
-public:	
+public:
 	UShipMovementComponent();
-	
-	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType,
+	                           FActorComponentTickFunction* ThisTickFunction) override;
 
 protected:
 	// Thrust Properties
@@ -38,7 +39,7 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Movement Properties")
 	float FlapSpeed;
-	
+
 
 	// Pitch Properties
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Movement Properties")
@@ -65,15 +66,16 @@ private:
 	float CurrentRoll;
 	float CurrentPitch;
 	float CurrentYaw;
-	
+
 public:
 	void SetYawInput(float InputValue);
 	void SetPitchInput(float InputValue);
 	void SetRollInput(float InputValue);
-	void SetThrustInput(float InputValue);
+	void SetThrottleInput(float InputValue);
 
 private:
-	void UpdateRotationMovement(float DeltaSeconds, float& CurrentValue, float InputValue, float MaxAngle, float Speed, FRotator RotationAxis);
+	void UpdateRotationMovement(float DeltaSeconds, float& CurrentValue, float InputValue, float MaxAngle, float Speed,
+	                            FRotator RotationAxis);
 	void UpdateThrustMovement(float DeltaSeconds);
 
 public:

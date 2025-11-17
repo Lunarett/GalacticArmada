@@ -4,11 +4,34 @@
 #include "Components/ActorComponent.h"
 #include "HealthComponent.generated.h"
 
-// OnHealthChanged event
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_SixParams(FOnHealthChangedSignature, UHealthComponent*, HealthComp, float, Health, float, HealthDelta, const class UDamageType*, DamageType, AController*, InstigatedBy, AActor*, DamageCauser);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(
+	FOnHealthChangedSignature,
+	UHealthComponent*, HealthComp,
+	float, NewHealth,
+	float, Delta,
+	AActor*, InstigatorActor
+);
 
-// OnDeath event
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnDeathSignature, AController*, InstigatedBy, AActor*, DamageCauser);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
+	FOnDamagedSignature,
+	UHealthComponent*, HealthComp,
+	float, DamageAmount,
+	AActor*, InstigatorActor
+);
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
+	FOnHealedSignature,
+	UHealthComponent*, HealthComp,
+	float, HealAmount,
+	AActor*, HealerActor
+);
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
+	FOnDeathSignature,
+	AActor*, DeadActor,
+	AController*, KillerController,
+	AActor*, DamageCauser
+);
 
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class GALACTICARMADA_API UHealthComponent : public UActorComponent
@@ -19,32 +42,69 @@ public:
 	UHealthComponent();
 
 protected:
-	virtual void BeginPlay() override;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Health")
+	float MaxHealth = 100.f;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Health")
-	float DefaultHealth;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Health")
+	float CurrentHealth = 0.f;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Health")
-	float Health;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Health")
+	bool bStartAtMaxHealth = true;
 
-	UFUNCTION()
-	void HandleTakeAnyDamage(AActor* DamagedActor, float Damage, const UDamageType* DamageType, AController* InstigatedBy, AActor* DamageCauser);
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Team")
+	int32 TeamId = 0;
 
-	UFUNCTION()
-	void HandleTakePointDamage(AActor* DamagedActor, float Damage, class AController* InstigatedBy, FVector HitLocation, class UPrimitiveComponent* FHitComponent, FName BoneName, FVector ShotFromDirection, const class UDamageType* DamageType, AActor* DamageCauser);
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Damage")
+	bool bAllowFriendlyFire = false;
 
-	UFUNCTION()
-	void HandleTakeRadialDamage(AActor* DamagedActor, float Damage, const class UDamageType* DamageType, FVector Origin, const FHitResult& HitInfo, class AController* InstigatedBy, AActor* DamageCauser);
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Health")
+	bool bIsDead = false;
 
 public:
-	UPROPERTY(BlueprintAssignable, Category = "Events")
+	UPROPERTY(BlueprintAssignable, Category="Events")
 	FOnHealthChangedSignature OnHealthChanged;
 
-	UPROPERTY(BlueprintAssignable, Category = "Events")
+	UPROPERTY(BlueprintAssignable, Category="Events")
+	FOnDamagedSignature OnDamaged;
+
+	UPROPERTY(BlueprintAssignable, Category="Events")
+	FOnHealedSignature OnHealed;
+
+	UPROPERTY(BlueprintAssignable, Category="Events")
 	FOnDeathSignature OnDeath;
 
-	FORCEINLINE float GetDefaultHealth() const { return DefaultHealth; }
-	FORCEINLINE float GetHealth() const { return Health; }
+protected:
+	virtual void BeginPlay() override;
 
-	FORCEINLINE void SetDefaultHealth(const float HealthValue) { DefaultHealth = HealthValue; }
+	UFUNCTION()
+	void HandleTakeAnyDamage(AActor* DamagedActor, float Damage, const UDamageType* DamageType,
+	                         AController* InstigatedBy, AActor* DamageCauser);
+
+public:
+	UFUNCTION(BlueprintCallable, Category="Health")
+	void ApplyDamage(const float DamageAmount, AActor* InstigatorActor = nullptr, const int32 InstigatorTeamId = -1);
+
+	UFUNCTION(BlueprintCallable, Category="Health")
+	void Heal(const float HealAmount, AActor* HealerActor = nullptr);
+
+	UFUNCTION(BlueprintCallable, Category="Health")
+	void Kill(AActor* InstigatorActor = nullptr);
+
+	UFUNCTION(BlueprintCallable, Category="Health")
+	void SetMaxHealth(const float NewMaxHealth, const bool bClampCurrent = true);
+
+	UFUNCTION(BlueprintCallable, Category="Team")
+	void SetTeamId(const int32 NewTeamId) { TeamId = NewTeamId; }
+
+	UFUNCTION(BlueprintPure, Category="Health")
+	float GetMaxHealth() const { return MaxHealth; }
+
+	UFUNCTION(BlueprintPure, Category="Health")
+	float GetCurrentHealth() const { return CurrentHealth; }
+
+	UFUNCTION(BlueprintPure, Category="Health")
+	bool GetIsDead() const { return bIsDead; }
+
+	UFUNCTION(BlueprintPure, Category="Team")
+	int32 GetTeamId() const { return TeamId; }
 };

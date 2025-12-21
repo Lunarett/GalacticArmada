@@ -17,14 +17,7 @@
 	],
 	"Plugins": [
 		{
-			"Name": "ModelingToolsEditorMode",
-			"Enabled": true,
-			"TargetAllowList": [
-				"Editor"
-			]
-		},
-		{
-			"Name": "ChaosVehiclesPlugin",
+			"Name": "SmartFlyingNavigation",
 			"Enabled": true
 		}
 	]

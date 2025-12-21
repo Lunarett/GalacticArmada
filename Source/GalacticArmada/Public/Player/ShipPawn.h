@@ -12,6 +12,7 @@ class UCannonComponent;
 class UHealthComponent;
 class UNiagaraSystem;
 class UNiagaraComponent;
+class UPathfindingComponent;
 
 UCLASS(Abstract)
 class GALACTICARMADA_API AShipPawn : public APawn
@@ -40,6 +41,9 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Components")
 	UHealthComponent* HealthComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	UPathfindingComponent* PathfindingComponent;
 
 
 	// ShipPawn - Effects

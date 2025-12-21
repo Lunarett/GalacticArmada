@@ -1,4 +1,5 @@
 #include "Player/ShipPawn.h"
+#include "Component/PathfindingComponent.h"
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
 #include "Camera/CameraComponent.h"
@@ -41,6 +42,7 @@ AShipPawn::AShipPawn()
 
 	// Initialize Ship Movement
 	ShipMovementComponent = CreateDefaultSubobject<UShipMovementComponent>(TEXT("ShipMovement"));
+	ShipMovementComponent->SetUpdatedComponent(ShipMesh);
 
 	// Initialize Cannon
 	CannonComponent = CreateDefaultSubobject<UCannonComponent>(TEXT("Cannon"));
@@ -49,6 +51,9 @@ AShipPawn::AShipPawn()
 	HealthComponent = CreateDefaultSubobject<UHealthComponent>(TEXT("Health"));
 	HealthComponent->SetMaxHealth(100.0f);
 	HealthComponent->OnDeath.AddDynamic(this, &AShipPawn::OnPawnDied);
+
+	// Initialize Pawn Pathfinding Component
+	PathfindingComponent = CreateDefaultSubobject<UPathfindingComponent>(TEXT("PathfindingComponent"));
 }
 
 void AShipPawn::SetThrottle(const float InThrottle)
@@ -132,15 +137,15 @@ void AShipPawn::OnShipCollision(UPrimitiveComponent* HitComponent, AActor* Other
 	if (IsValid(OtherActor) && OtherActor != this)
 	{
 		const float Speed = FVector::DotProduct(GetVelocity(), GetActorForwardVector());
-		const float Damage = FMath::GetMappedRangeValueClamped(
-			FVector2D(ShipMovementComponent->GetShipMinSpeed(), ShipMovementComponent->GetMaxSpeed()),
-			FVector2D((HealthComponent->GetMaxHealth() / 2.0f), HealthComponent->GetMaxHealth()), Speed);
-
-		// Apply Damage To Self
-		if (Damage > 0)
-		{
-			UGameplayStatics::ApplyPointDamage(this, Damage, GetActorLocation(), Hit, GetController(), this, nullptr);
-		}
+		// const float Damage = FMath::GetMappedRangeValueClamped(
+		// 	FVector2D(ShipMovementComponent->GetShipMinSpeed(), ShipMovementComponent->GetMaxSpeed()),
+		// 	FVector2D((HealthComponent->GetMaxHealth() / 2.0f), HealthComponent->GetMaxHealth()), Speed);
+		//
+		// // Apply Damage To Self
+		// if (Damage > 0)
+		// {
+		// 	UGameplayStatics::ApplyPointDamage(this, Damage, GetActorLocation(), Hit, GetController(), this, nullptr);
+		// }
 
 		// Spawn Impact Particle Effects
 		if (CollisionImpactParticleEffect)

@@ -12,44 +12,49 @@ UShipMovementComponent::UShipMovementComponent()
 void UShipMovementComponent::BeginPlay()
 {
 	Super::BeginPlay();
-	ResolveUpdatedComponent();
+	ResolveUpdatedComponentReference();
 }
 
-void UShipMovementComponent::ResolveUpdatedComponent()
-{
-	if (!UpdatedComponent)
-	{
-		if (AActor* Owner = GetOwner())
-		{
-			SetUpdatedComponent(Owner->GetRootComponent());
-		}
-	}
-}
-
-void UShipMovementComponent::TickComponent(float DeltaTime, ELevelTick TickType,
-                                           FActorComponentTickFunction* ThisTickFunction)
+void UShipMovementComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
 	AActor* Owner = GetOwner();
-	if (!Owner) return;
+	if (!Owner)
+	{
+		return;
+	}
 
 	if (!UpdatedComponent)
 	{
-		ResolveUpdatedComponent();
-		if (!UpdatedComponent) return;
+		ResolveUpdatedComponentReference();
+		if (!UpdatedComponent)
+		{
+			return;
+		}
 	}
 
-	if (bAIEnabled)
+	UpdateSteeringInputs();
+	SelectInputTargets();
+	SmoothInputTargets(DeltaTime);
+	ApplyRotation(DeltaTime);
+	ApplyTranslation(DeltaTime);
+}
+
+void UShipMovementComponent::ResolveUpdatedComponentReference()
+{
+	if (UpdatedComponent)
 	{
-		UpdateAIInputs();
+		return;
 	}
 
-	SelectTargets();
-	SmoothInputs(DeltaTime);
+	AActor* Owner = GetOwner();
+	if (!Owner)
+	{
+		return;
+	}
 
-	ApplyArcadeRotation(DeltaTime);
-	ApplyArcadeTranslation(DeltaTime);
+	SetUpdatedComponent(Owner->GetRootComponent());
 }
 
 void UShipMovementComponent::SetThrottleInput(float InputValue)
@@ -59,268 +64,247 @@ void UShipMovementComponent::SetThrottleInput(float InputValue)
 
 void UShipMovementComponent::SetRollInput(float InputValue)
 {
-	float V = FMath::Clamp(InputValue, -1.0f, 1.0f);
-	if (bInvertRoll) V *= -1.0f;
-	PlayerRollTarget = V;
+	PlayerRollTarget = FMath::Clamp(InputValue, -1.0f, 1.0f);
 }
 
 void UShipMovementComponent::SetPitchInput(float InputValue)
 {
-	float V = FMath::Clamp(InputValue, -1.0f, 1.0f);
-	if (bInvertPitch) V *= -1.0f;
-	PlayerPitchTarget = V;
+	PlayerPitchTarget = FMath::Clamp(InputValue, -1.0f, 1.0f);
 }
 
 void UShipMovementComponent::SetYawInput(float InputValue)
 {
-	float V = FMath::Clamp(InputValue, -1.0f, 1.0f);
-	if (bInvertYaw) V *= -1.0f;
-	PlayerYawTarget = V;
+	PlayerYawTarget = FMath::Clamp(InputValue, -1.0f, 1.0f);
 }
 
-void UShipMovementComponent::SetAIEnabled(bool bEnabled)
+void UShipMovementComponent::SteerTowardWorldDirection(const FVector& WorldDirection)
 {
-	bAIEnabled = bEnabled;
-
-	if (!bAIEnabled)
-	{
-		bAIHasTargetLocation = false;
-		AITargetLocationWS = FVector::ZeroVector;
-		AIDesiredDirectionWS = FVector::ZeroVector;
-
-		AIThrottleTarget = 0.0f;
-		AIRollTarget = 0.0f;
-		AIPitchTarget = 0.0f;
-		AIYawTarget = 0.0f;
-	}
+	bHasSteeringTargetLocation = false;
+	SteeringTargetDirectionWorldSpace = WorldDirection;
 }
 
-void UShipMovementComponent::StopSteering()
+void UShipMovementComponent::SteerTowardWorldLocation(const FVector& WorldLocation)
 {
-	SetAIEnabled(false);
+	bHasSteeringTargetLocation = true;
+	SteeringTargetLocationWorldSpace = WorldLocation;
 }
 
-void UShipMovementComponent::SteerTowardDirection(const FVector& WorldDirection)
+void UShipMovementComponent::ClearSteering()
 {
-	bAIEnabled = true;
-	bAIHasTargetLocation = false;
-	AIDesiredDirectionWS = WorldDirection;
+	bHasSteeringTargetLocation = false;
+	SteeringTargetDirectionWorldSpace = FVector::ZeroVector;
+	SteeringThrottleTarget = 0.0f;
+	SteeringRollTarget = 0.0f;
+	SteeringPitchTarget = 0.0f;
+	SteeringYawTarget = 0.0f;
 }
 
-void UShipMovementComponent::SteerTowardLocation(const FVector& WorldLocation)
-{
-	bAIEnabled = true;
-	bAIHasTargetLocation = true;
-	AITargetLocationWS = WorldLocation;
-}
-
-FVector UShipMovementComponent::GetEffectiveForwardWS() const
+void UShipMovementComponent::UpdateSteeringInputs()
 {
 	AActor* Owner = GetOwner();
-	if (!Owner) return FVector::ForwardVector;
-
-	FVector Fwd = Owner->GetActorForwardVector().GetSafeNormal();
-	if (bInvertForward)
+	if (!Owner)
 	{
-		Fwd *= -1.0f;
-	}
-	return Fwd;
-}
-
-float UShipMovementComponent::SafeAtan2Deg(float Y, float X)
-{
-	const float SafeX = (FMath::Abs(X) < 0.001f) ? (X >= 0.0f ? 0.001f : -0.001f) : X;
-	return FMath::RadiansToDegrees(FMath::Atan2(Y, SafeX));
-}
-
-float UShipMovementComponent::Wrap180(float Deg)
-{
-	while (Deg > 180.0f) Deg -= 360.0f;
-	while (Deg < -180.0f) Deg += 360.0f;
-	return Deg;
-}
-
-void UShipMovementComponent::UpdateAIInputs()
-{
-	AActor* Owner = GetOwner();
-	if (!Owner) return;
-
-	FVector DesiredDir = FVector::ZeroVector;
-
-	if (bAIHasTargetLocation)
-	{
-		const FVector ToTarget = AITargetLocationWS - Owner->GetActorLocation();
-
-		if (ArrivalRadius > 0.0f && ToTarget.SizeSquared() <= FMath::Square(ArrivalRadius))
-		{
-			AIThrottleTarget = 0.0f;
-			AIRollTarget = 0.0f;
-			AIPitchTarget = 0.0f;
-			AIYawTarget = 0.0f;
-			return;
-		}
-
-		DesiredDir = ToTarget;
-	}
-	else
-	{
-		DesiredDir = AIDesiredDirectionWS;
-	}
-
-	if (!DesiredDir.Normalize())
-	{
-		AIThrottleTarget = 0.0f;
-		AIRollTarget = 0.0f;
-		AIPitchTarget = 0.0f;
-		AIYawTarget = 0.0f;
 		return;
 	}
 
-	const FVector Forward = GetEffectiveForwardWS();
-	const FVector Right = Owner->GetActorRightVector().GetSafeNormal();
-	const FVector Up = Owner->GetActorUpVector().GetSafeNormal();
-	const FVector WorldUp = FVector::UpVector;
+	FVector DesiredDirection = FVector::ZeroVector;
 
-	// Angle-to-target for throttle gating
-	const float DotFD = FMath::Clamp(FVector::DotProduct(Forward, DesiredDir), -1.0f, 1.0f);
-	const float AngleToTargetDeg = FMath::RadiansToDegrees(FMath::Acos(DotFD));
-
-	// Local components (for yaw/pitch errors)
-	const float LocalX = FVector::DotProduct(DesiredDir, Forward);
-	const float LocalY = FVector::DotProduct(DesiredDir, Right);
-	const float LocalZ = FVector::DotProduct(DesiredDir, Up);
-
-	float YawErrDeg   = SafeAtan2Deg(LocalY, LocalX);
-	float PitchErrDeg = SafeAtan2Deg(LocalZ, LocalX);
-
-	if (FMath::Abs(YawErrDeg) < AimDeadzoneDeg)   YawErrDeg = 0.0f;
-	if (FMath::Abs(PitchErrDeg) < AimDeadzoneDeg) PitchErrDeg = 0.0f;
-
-	float YawCmd   = (YawErrDeg / FMath::Max(YawFullInputAtDeg, 1.0f)) * YawGain;
-	float PitchCmd = (PitchErrDeg / FMath::Max(PitchFullInputAtDeg, 1.0f)) * PitchGain;
-
-	YawCmd   = FMath::Clamp(YawCmd,   -1.0f, 1.0f);
-	PitchCmd = FMath::Clamp(PitchCmd, -1.0f, 1.0f);
-
-	float RollCmd = FMath::Clamp(YawCmd * RollFromYaw, -1.0f, 1.0f);
-
-	// ============================
-	// FORCE UPRIGHT AUTO-LEVEL
-	// ============================
-	if (bForceUprightLeveling && FMath::Abs(YawErrDeg) < AutoLevelStartDeg)
+	if (bHasSteeringTargetLocation)
 	{
-		// Create an "upright" orientation that preserves forward but uses WorldUp.
-		// This completely eliminates the upside-down solution.
-		const FQuat CurrentQ = Owner->GetActorQuat();
-		const FQuat UprightQ = FRotationMatrix::MakeFromXZ(Forward, WorldUp).ToQuat();
+		const FVector ToTarget = SteeringTargetLocationWorldSpace - Owner->GetActorLocation();
+		if (ArrivalRadius > 0.0f && ToTarget.SizeSquared() <= FMath::Square(ArrivalRadius))
+		{
+			ClearSteering();
+			return;
+		}
 
-		// Compute the delta from current to upright in the ship's local frame
-		const FQuat DeltaQ = CurrentQ.Inverse() * UprightQ;
-		const FRotator DeltaR = DeltaQ.Rotator();
-
-		// We only want roll correction here.
-		const float RollErrorDeg = Wrap180(DeltaR.Roll);
-
-		float LevelCmd = FMath::Clamp((RollErrorDeg / FMath::Max(BankMaxDeg, 1.0f)) * AutoLevelGain, -1.0f, 1.0f);
-
-		// Blend: when yaw error near 0 -> strong leveling; as yaw grows -> more bank-into-turn
-		const float Alpha = 1.0f - FMath::Clamp(FMath::Abs(YawErrDeg) / FMath::Max(AutoLevelStartDeg, 0.001f), 0.0f, 1.0f);
-		RollCmd = FMath::Lerp(RollCmd, LevelCmd, Alpha);
-	}
-
-	// Throttle control to avoid orbiting
-	float ThrottleCmd = AIThrottle;
-
-	if (AngleToTargetDeg >= StopThrustAngleDeg)
-	{
-		ThrottleCmd = bBrakeWhenVeryOffTarget ? -1.0f : 0.0f;
-	}
-	else if (AngleToTargetDeg > SlowdownStartAngleDeg)
-	{
-		const float T = (AngleToTargetDeg - SlowdownStartAngleDeg) / FMath::Max(StopThrustAngleDeg - SlowdownStartAngleDeg, 0.001f);
-		const float Alpha = FMath::Clamp(T, 0.0f, 1.0f);
-		ThrottleCmd = FMath::Lerp(AIThrottle, MinThrottleWhenOffTarget, Alpha);
-	}
-
-	ThrottleCmd = FMath::Clamp(ThrottleCmd, -1.0f, 1.0f);
-
-	// Apply inversion flags
-	if (bInvertYaw)   YawCmd   *= -1.0f;
-	if (bInvertPitch) PitchCmd *= -1.0f;
-	if (bInvertRoll)  RollCmd  *= -1.0f;
-
-	AIThrottleTarget = ThrottleCmd;
-	AIYawTarget = YawCmd;
-	AIPitchTarget = PitchCmd;
-	AIRollTarget = RollCmd;
-
-	if (bDebugDraw && GetWorld())
-	{
-		const FVector Loc = Owner->GetActorLocation();
-		const float S = DebugDrawScale;
-		DrawDebugLine(GetWorld(), Loc, Loc + Forward * S,    FColor::Green, false, 0.0f, 0, 3.0f);
-		DrawDebugLine(GetWorld(), Loc, Loc + DesiredDir * S, FColor::Red,   false, 0.0f, 0, 3.0f);
-	}
-}
-
-void UShipMovementComponent::SelectTargets()
-{
-	if (bAIEnabled)
-	{
-		TargetThrottle = AIThrottleTarget;
-		TargetRoll = AIRollTarget;
-		TargetPitch = AIPitchTarget;
-		TargetYaw = AIYawTarget;
+		DesiredDirection = ToTarget;
 	}
 	else
 	{
-		TargetThrottle = PlayerThrottleTarget;
-		TargetRoll = PlayerRollTarget;
-		TargetPitch = PlayerPitchTarget;
-		TargetYaw = PlayerYawTarget;
+		DesiredDirection = SteeringTargetDirectionWorldSpace;
+	}
+
+	if (!DesiredDirection.Normalize())
+	{
+		ClearSteering();
+		return;
+	}
+
+	const FVector Forward = GetForwardVectorWorldSpace();
+	const FVector Right = Owner->GetActorRightVector();
+	const FVector Up = Owner->GetActorUpVector();
+	const FVector WorldUp = FVector::UpVector;
+
+	const float ForwardDot = FVector::DotProduct(Forward, DesiredDirection);
+	const float AngleToTargetDegrees = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(ForwardDot, -1.0f, 1.0f)));
+
+	// Convert desired direction into local-space components.
+	// This allows yaw and pitch errors to be computed independently.
+	const float LocalForward = FVector::DotProduct(DesiredDirection, Forward);
+	const float LocalRight = FVector::DotProduct(DesiredDirection, Right);
+	const float LocalUp = FVector::DotProduct(DesiredDirection, Up);
+
+	float YawErrorDegrees = SafeAtan2Degrees(LocalRight, LocalForward);
+	float PitchErrorDegrees = SafeAtan2Degrees(LocalUp, LocalForward);
+
+	if (FMath::Abs(YawErrorDegrees) < AimDeadzoneDegrees)
+	{
+		YawErrorDegrees = 0.0f;
+	}
+
+	if (FMath::Abs(PitchErrorDegrees) < AimDeadzoneDegrees)
+	{
+		PitchErrorDegrees = 0.0f;
+	}
+
+	float YawCommand = (YawErrorDegrees / FMath::Max(FullYawInputAtDegrees, 1.0f)) * YawResponseGain;
+	float PitchCommand = (PitchErrorDegrees / FMath::Max(FullPitchInputAtDegrees, 1.0f)) * PitchResponseGain;
+
+	YawCommand = FMath::Clamp(YawCommand, -1.0f, 1.0f);
+	PitchCommand = FMath::Clamp(PitchCommand, -1.0f, 1.0f);
+
+	float RollCommand = FMath::Clamp(YawCommand * RollFromYawFactor, -1.0f, 1.0f);
+
+	// Auto-leveling:
+	// Construct an upright orientation that preserves forward direction.
+	// Roll correction is extracted from the delta between current and upright rotation.
+	if (FMath::Abs(YawErrorDegrees) < AutoLevelStartYawDegrees)
+	{
+		const FQuat CurrentRotation = Owner->GetActorQuat();
+		const FQuat UprightRotation = FRotationMatrix::MakeFromXZ(Forward, WorldUp).ToQuat();
+		const FQuat DeltaRotation = CurrentRotation.Inverse() * UprightRotation;
+
+		const float RollErrorDegrees = NormalizeAngleDegrees(DeltaRotation.Rotator().Roll);
+		const float LevelingCommand = FMath::Clamp(
+			(RollErrorDegrees / FMath::Max(MaximumBankAngleDegrees, 1.0f)) * AutoLevelStrength,
+			-1.0f,
+			1.0f
+		);
+
+		const float BlendAlpha = 1.0f - FMath::Clamp(
+			FMath::Abs(YawErrorDegrees) / FMath::Max(AutoLevelStartYawDegrees, 0.001f),
+			0.0f,
+			1.0f
+		);
+
+		RollCommand = FMath::Lerp(RollCommand, LevelingCommand, BlendAlpha);
+	}
+
+	float ThrottleCommand = 1.0f;
+
+	if (AngleToTargetDegrees >= ThrottleStopAngleDegrees)
+	{
+		ThrottleCommand = bBrakeWhenSeverelyMisaligned ? -1.0f : 0.0f;
+	}
+	else if (AngleToTargetDegrees > ThrottleSlowdownAngleDegrees)
+	{
+		const float InterpolationAlpha =
+			(AngleToTargetDegrees - ThrottleSlowdownAngleDegrees) /
+			FMath::Max(ThrottleStopAngleDegrees - ThrottleSlowdownAngleDegrees, 0.001f);
+
+		ThrottleCommand = FMath::Lerp(1.0f, MinimumThrottleWhenOffTarget, FMath::Clamp(InterpolationAlpha, 0.0f, 1.0f));
+	}
+
+	SteeringThrottleTarget = FMath::Clamp(ThrottleCommand, -1.0f, 1.0f);
+	SteeringYawTarget = YawCommand;
+	SteeringPitchTarget = PitchCommand;
+	SteeringRollTarget = RollCommand;
+
+	if (bDrawDebug && GetWorld())
+	{
+		const FVector Location = Owner->GetActorLocation();
+		DrawDebugLine(GetWorld(), Location, Location + Forward * DebugDrawScale, FColor::Green, false, 0.0f, 0, 3.0f);
+		DrawDebugLine(GetWorld(), Location, Location + DesiredDirection * DebugDrawScale, FColor::Red, false, 0.0f, 0, 3.0f);
 	}
 }
 
-void UShipMovementComponent::SmoothInputs(float DeltaTime)
+void UShipMovementComponent::SelectInputTargets()
 {
-	const float S = FMath::Max(InputSmoothing, 0.0f);
-
-	ThrottleInput = FMath::FInterpTo(ThrottleInput, TargetThrottle, DeltaTime, S);
-	RollInput     = FMath::FInterpTo(RollInput,     TargetRoll,     DeltaTime, S);
-	PitchInput    = FMath::FInterpTo(PitchInput,    TargetPitch,    DeltaTime, S);
-	YawInput      = FMath::FInterpTo(YawInput,      TargetYaw,      DeltaTime, S);
+	TargetThrottle = SteeringThrottleTarget != 0.0f ? SteeringThrottleTarget : PlayerThrottleTarget;
+	TargetRoll = SteeringRollTarget != 0.0f ? SteeringRollTarget : PlayerRollTarget;
+	TargetPitch = SteeringPitchTarget != 0.0f ? SteeringPitchTarget : PlayerPitchTarget;
+	TargetYaw = SteeringYawTarget != 0.0f ? SteeringYawTarget : PlayerYawTarget;
 }
 
-void UShipMovementComponent::ApplyArcadeRotation(float DeltaTime)
+void UShipMovementComponent::SmoothInputTargets(float DeltaTime)
 {
-	AActor* Owner = GetOwner();
-	if (!Owner) return;
+	const float Smoothing = FMath::Max(InputSmoothingSpeed, 0.0f);
 
-	const float YawRate   = MaxYawRateDeg   * YawInput;
-	const float PitchRate = MaxPitchRateDeg * PitchInput;
-	const float RollRate  = MaxRollRateDeg  * RollInput;
-
-	const FRotator DeltaRot(PitchRate * DeltaTime, YawRate * DeltaTime, RollRate * DeltaTime);
-	Owner->AddActorLocalRotation(DeltaRot, true);
+	SmoothedThrottle = FMath::FInterpTo(SmoothedThrottle, TargetThrottle, DeltaTime, Smoothing);
+	SmoothedRoll = FMath::FInterpTo(SmoothedRoll, TargetRoll, DeltaTime, Smoothing);
+	SmoothedPitch = FMath::FInterpTo(SmoothedPitch, TargetPitch, DeltaTime, Smoothing);
+	SmoothedYaw = FMath::FInterpTo(SmoothedYaw, TargetYaw, DeltaTime, Smoothing);
 }
 
-void UShipMovementComponent::ApplyArcadeTranslation(float DeltaTime)
+void UShipMovementComponent::ApplyRotation(float DeltaTime)
 {
 	AActor* Owner = GetOwner();
-	if (!Owner) return;
+	if (!Owner)
+	{
+		return;
+	}
 
-	const float TargetSpeed = FMath::Clamp(ThrottleInput * MaxSpeed, MinSpeed, MaxSpeed);
+	const FRotator DeltaRotation(
+		SmoothedPitch * MaximumPitchRateDegrees * DeltaTime,
+		SmoothedYaw * MaximumYawRateDegrees * DeltaTime,
+		SmoothedRoll * MaximumRollRateDegrees * DeltaTime
+	);
 
-	const bool bBraking = (ThrottleInput < -0.2f);
-	float Rate = Deceleration;
+	Owner->AddActorLocalRotation(DeltaRotation, true);
+}
 
-	if (TargetSpeed > CurrentSpeed) Rate = Acceleration;
-	else Rate = bBraking ? BrakeDeceleration : Deceleration;
+void UShipMovementComponent::ApplyTranslation(float DeltaTime)
+{
+	AActor* Owner = GetOwner();
+	if (!Owner)
+	{
+		return;
+	}
 
-	// Correct usage: Rate is units/sec (do NOT multiply by DeltaTime)
-	CurrentSpeed = FMath::FInterpConstantTo(CurrentSpeed, TargetSpeed, DeltaTime, Rate);
+	const float TargetSpeed = FMath::Clamp(SmoothedThrottle * MaximumSpeed, MinimumSpeed, MaximumSpeed);
+	const bool bIsBraking = SmoothedThrottle < -0.2f;
 
-	const FVector Forward = GetEffectiveForwardWS();
+	float SpeedChangeRate = DecelerationRate;
+
+	if (TargetSpeed > CurrentSpeed)
+	{
+		SpeedChangeRate = AccelerationRate;
+	}
+	else if (bIsBraking)
+	{
+		SpeedChangeRate = BrakeDecelerationRate;
+	}
+
+	CurrentSpeed = FMath::FInterpConstantTo(CurrentSpeed, TargetSpeed, DeltaTime, SpeedChangeRate);
+
 	FHitResult Hit;
-	Owner->AddActorWorldOffset(Forward * CurrentSpeed * DeltaTime, true, &Hit);
+	Owner->AddActorWorldOffset(GetForwardVectorWorldSpace() * CurrentSpeed * DeltaTime, true, &Hit);
+}
+
+FVector UShipMovementComponent::GetForwardVectorWorldSpace() const
+{
+	AActor* Owner = GetOwner();
+	return Owner ? Owner->GetActorForwardVector().GetSafeNormal() : FVector::ForwardVector;
+}
+
+float UShipMovementComponent::SafeAtan2Degrees(float Y, float X)
+{
+	const float SafeX = FMath::Abs(X) < 0.001f ? (X >= 0.0f ? 0.001f : -0.001f) : X;
+	return FMath::RadiansToDegrees(FMath::Atan2(Y, SafeX));
+}
+
+float UShipMovementComponent::NormalizeAngleDegrees(float Degrees)
+{
+	while (Degrees > 180.0f)
+	{
+		Degrees -= 360.0f;
+	}
+
+	while (Degrees < -180.0f)
+	{
+		Degrees += 360.0f;
+	}
+
+	return Degrees;
 }

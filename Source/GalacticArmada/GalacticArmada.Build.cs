@@ -15,8 +15,9 @@ public class GalacticArmada : ModuleRules
 			"Engine",
 			"InputCore",
 			"AIModule",
+			"GameplayTasks",
 			"EnhancedInput",
-			"SmartFlyingNavigation"
+			"SmartFlyingNavigation",
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { "Niagara", "EnhancedInput", "UMG" });

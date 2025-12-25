@@ -6,6 +6,7 @@
 
 class AShipPawn;
 class ATeamPlayerStart;
+class UShipSpawnSubsystem;
 
 UCLASS(Abstract)
 class GALACTICARMADA_API ABaseMatchGameMode : public AGameMode
@@ -40,6 +41,8 @@ private:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
 	virtual void PostLogin(APlayerController* NewPlayer) override;
 	virtual AActor* ChoosePlayerStart_Implementation(AController* Player) override;
 	virtual APawn* SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot) override;
@@ -56,9 +59,18 @@ private:
 	void StartMatchAfterDelay();
 	void SpawnAIForTeam(const int32 TeamID);
 	void SpawnAllAI();
+
+	void InitializePools();
+
 	TArray<ATeamPlayerStart*> FindAllPlayerStartsForTeam(const int32 TeamID) const;
 	TSubclassOf<AShipPawn> GetRandomAISpawnClass(const int32 TeamID) const;
+
 	bool TrySpawnAIShipAtStart(class ATeamPlayerStart* PlayerStart, const int32 TeamID);
 	void AssignAIPlayerStateTeam(class AShipPawn* SpawnedShip, const int32 TeamID);
+
 	bool IsValidAISpawnClass(const TSubclassOf<AShipPawn>& ShipClass) const;
+
+	UShipSpawnSubsystem* GetShipSpawnSubsystem() const;
+
+	void CleanupSpawnedShips();
 };

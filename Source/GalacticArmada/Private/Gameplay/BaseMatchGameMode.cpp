@@ -1,9 +1,11 @@
 #include "Gameplay/BaseMatchGameMode.h"
 #include "Gameplay/GalacticGameInstance.h"
 #include "Gameplay/TeamPlayerStart.h"
+#include "Optimization/ActorPool/ActorPoolSubsystem.h"
 #include "Player/ShipPawn.h"
 #include "Player/ShipPlayerController.h"
 #include "Player/ShipPlayerState.h"
+#include "Systems/ShipSpawnSubsystem.h"
 #include "Kismet/GameplayStatics.h"
 
 ABaseMatchGameMode::ABaseMatchGameMode()
@@ -17,6 +19,8 @@ void ABaseMatchGameMode::BeginPlay()
 {
 	Super::BeginPlay();
 
+	InitializePools();
+
 	GetWorldTimerManager().SetTimer(
 		MatchStartTimerHandle,
 		this,
@@ -26,25 +30,32 @@ void ABaseMatchGameMode::BeginPlay()
 	);
 }
 
+void ABaseMatchGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	CleanupSpawnedShips();
+	Super::EndPlay(EndPlayReason);
+}
+
 void ABaseMatchGameMode::PostLogin(APlayerController* NewPlayer)
 {
 	Super::PostLogin(NewPlayer);
 
-	if (NewPlayer != nullptr)
+	if (NewPlayer == nullptr)
 	{
-		AShipPlayerState* PlayerState = Cast<AShipPlayerState>(NewPlayer->PlayerState);
-		if (PlayerState != nullptr)
-		{
-			PlayerState->SetTeamID(PlayerTeamID);
-		}
+		return;
+	}
 
-		RestartPlayer(NewPlayer);
+	if (AShipPlayerState* PS = Cast<AShipPlayerState>(NewPlayer->PlayerState))
+	{
+		PS->SetTeamID(PlayerTeamID);
+	}
 
-		if (!bHasSpawnedAI)
-		{
-			SpawnAllAI();
-			bHasSpawnedAI = true;
-		}
+	RestartPlayer(NewPlayer);
+
+	if (!bHasSpawnedAI)
+	{
+		SpawnAllAI();
+		bHasSpawnedAI = true;
 	}
 }
 
@@ -124,19 +135,30 @@ APawn* ABaseMatchGameMode::SpawnDefaultPawnFor_Implementation(AController* NewPl
 		return nullptr;
 	}
 
-	TSubclassOf<AShipPawn> ShipClass = GameInstance->GetDefaultPlayerShipClass();
+	const TSubclassOf<AShipPawn> ShipClass = GameInstance->GetDefaultPlayerShipClass();
 	if (!IsValidAISpawnClass(ShipClass))
 	{
 		UE_LOG(LogTemp, Error, TEXT("SpawnDefaultPawnFor: Invalid player ship class"));
 		return nullptr;
 	}
 
-	FActorSpawnParameters Params;
-	Params.Owner = NewPlayer;
-	Params.Instigator = NewPlayer->GetPawn();
-	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+	UShipSpawnSubsystem* ShipSpawner = GetShipSpawnSubsystem();
+	if (!ShipSpawner)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SpawnDefaultPawnFor: Missing ShipSpawnSubsystem"));
+		return nullptr;
+	}
 
-	return GetWorld()->SpawnActor<APawn>(ShipClass, StartSpot->GetActorTransform(), Params);
+	AShipPawn* SpawnedShip = ShipSpawner->SpawnShip(ShipClass, StartSpot->GetActorTransform(), PlayerTeamID, false);
+	if (!SpawnedShip)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SpawnDefaultPawnFor: ShipSpawner failed to spawn player ship"));
+		return nullptr;
+	}
+
+	SpawnedShip->SetOwner(NewPlayer);
+
+	return SpawnedShip;
 }
 
 void ABaseMatchGameMode::SpawnAllAI()
@@ -169,18 +191,21 @@ bool ABaseMatchGameMode::TrySpawnAIShipAtStart(ATeamPlayerStart* PlayerStart, co
 		return false;
 	}
 
-	TSubclassOf<AShipPawn> ShipClass = GetRandomAISpawnClass(TeamID);
+	const TSubclassOf<AShipPawn> ShipClass = GetRandomAISpawnClass(TeamID);
 	if (!IsValidAISpawnClass(ShipClass))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("TrySpawnAIShipAtStart: Invalid ship class for team %d"), TeamID);
 		return false;
 	}
 
-	FActorSpawnParameters Params;
-	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+	UShipSpawnSubsystem* ShipSpawner = GetShipSpawnSubsystem();
+	if (!ShipSpawner)
+	{
+		return false;
+	}
 
-	AShipPawn* SpawnedShip = GetWorld()->SpawnActor<AShipPawn>(ShipClass, PlayerStart->GetActorTransform(), Params);
-	if (SpawnedShip == nullptr)
+	AShipPawn* SpawnedShip = ShipSpawner->SpawnShip(ShipClass, PlayerStart->GetActorTransform(), TeamID, true);
+	if (!SpawnedShip)
 	{
 		return false;
 	}
@@ -261,4 +286,72 @@ int32 ABaseMatchGameMode::GetOpposingTeamID(const int32 TeamID) const
 	}
 
 	return TeamA_ID;
+}
+
+UShipSpawnSubsystem* ABaseMatchGameMode::GetShipSpawnSubsystem() const
+{
+	return GetWorld() ? GetWorld()->GetSubsystem<UShipSpawnSubsystem>() : nullptr;
+}
+
+void ABaseMatchGameMode::InitializePools()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	UActorPoolSubsystem* Pool = GetWorld()->GetSubsystem<UActorPoolSubsystem>();
+	if (!Pool)
+	{
+		return;
+	}
+
+	UGalacticGameInstance* GameInstance = GetGameInstance<UGalacticGameInstance>();
+	if (GameInstance)
+	{
+		const TSubclassOf<AShipPawn> PlayerShipClass = GameInstance->GetDefaultPlayerShipClass();
+		if (IsValidAISpawnClass(PlayerShipClass))
+		{
+			Pool->InitializePool(*PlayerShipClass, 1);
+		}
+	}
+
+	// Estimate pool sizes from available starts (simple and works well)
+	const int32 TeamAStarts = FindAllPlayerStartsForTeam(TeamA_ID).Num();
+	const int32 TeamBStarts = FindAllPlayerStartsForTeam(TeamB_ID).Num();
+
+	for (const TSubclassOf<AShipPawn>& C : AllowedAISpawnableShips_TeamA)
+	{
+		if (IsValidAISpawnClass(C))
+		{
+			Pool->InitializePool(*C, TeamAStarts);
+		}
+	}
+
+	for (const TSubclassOf<AShipPawn>& C : AllowedAISpawnableShips_TeamB)
+	{
+		if (IsValidAISpawnClass(C))
+		{
+			Pool->InitializePool(*C, TeamBStarts);
+		}
+	}
+}
+
+void ABaseMatchGameMode::CleanupSpawnedShips()
+{
+	UShipSpawnSubsystem* ShipSpawner = GetShipSpawnSubsystem();
+	if (!ShipSpawner)
+	{
+		return;
+	}
+
+	// Copy to avoid modifying while iterating
+	const TArray<TObjectPtr<AShipPawn>> ShipsCopy = ShipSpawner->GetAllShips();
+	for (AShipPawn* Ship : ShipsCopy)
+	{
+		if (IsValid(Ship))
+		{
+			ShipSpawner->DespawnShip(Ship);
+		}
+	}
 }

@@ -1,7 +1,7 @@
 #include "Player/ShipPawn.h"
-#include "Component/PathfindingComponent.h"
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
+#include "AI/AIShipController.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CannonComponent.h"
 #include "Components/HealthComponent.h"
@@ -16,12 +16,11 @@ AShipPawn::AShipPawn()
 	PrimaryActorTick.bCanEverTick = true;
 
 	// Set AI Controller
-	// TODO: When you implement the AI uncomment this line
-	//AIControllerClass = AShipAIController::StaticClass();
+	AIControllerClass = AAIShipController::StaticClass();
 
 	// Initialize Ship Mesh
 	ShipMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("ShipMesh"));
-	ShipMesh->SetSimulatePhysics(true);
+	ShipMesh->SetSimulatePhysics(false);
 	ShipMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	ShipMesh->SetCollisionObjectType(ECC_Vehicle);
 	ShipMesh->OnComponentHit.AddDynamic(this, &AShipPawn::OnShipCollision);
@@ -42,7 +41,6 @@ AShipPawn::AShipPawn()
 
 	// Initialize Ship Movement
 	ShipMovementComponent = CreateDefaultSubobject<UShipMovementComponent>(TEXT("ShipMovement"));
-	ShipMovementComponent->SetUpdatedComponent(ShipMesh);
 
 	// Initialize Cannon
 	CannonComponent = CreateDefaultSubobject<UCannonComponent>(TEXT("Cannon"));
@@ -51,9 +49,6 @@ AShipPawn::AShipPawn()
 	HealthComponent = CreateDefaultSubobject<UHealthComponent>(TEXT("Health"));
 	HealthComponent->SetMaxHealth(100.0f);
 	HealthComponent->OnDeath.AddDynamic(this, &AShipPawn::OnPawnDied);
-
-	// Initialize Pawn Pathfinding Component
-	PathfindingComponent = CreateDefaultSubobject<UPathfindingComponent>(TEXT("PathfindingComponent"));
 }
 
 void AShipPawn::SetThrottle(const float InThrottle)

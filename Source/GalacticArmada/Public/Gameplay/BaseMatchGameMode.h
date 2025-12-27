@@ -1,15 +1,15 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "GameFramework/GameMode.h"
+#include "GameFramework/GameModeBase.h"
 #include "BaseMatchGameMode.generated.h"
 
-class AShipPawn;
 class ATeamPlayerStart;
+class AShipPawn;
 class UShipSpawnSubsystem;
 
-UCLASS(Abstract)
-class GALACTICARMADA_API ABaseMatchGameMode : public AGameMode
+UCLASS()
+class GALACTICARMADA_API ABaseMatchGameMode : public AGameModeBase
 {
 	GENERATED_BODY()
 
@@ -17,60 +17,69 @@ public:
 	ABaseMatchGameMode();
 
 protected:
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Match Properties|Team")
-	int32 TeamA_ID = 0;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Match Properties|Team")
-	int32 TeamB_ID = 1;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Match Properties|Team")
-	int32 PlayerTeamID = 0;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Match Properties|Spawning")
-	TArray<TSubclassOf<AShipPawn>> AllowedAISpawnableShips_TeamA;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Match Properties|Spawning")
-	TArray<TSubclassOf<AShipPawn>> AllowedAISpawnableShips_TeamB;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Match Properties")
-	float MatchStartDelay = 5.0f;
-
-private:
-	FTimerHandle MatchStartTimerHandle;
-	bool bHasSpawnedAI = false;
-
-protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
-
 	virtual void PostLogin(APlayerController* NewPlayer) override;
+
+	virtual void RestartPlayer(AController* NewPlayer) override;
 	virtual AActor* ChoosePlayerStart_Implementation(AController* Player) override;
 	virtual APawn* SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot) override;
-	virtual void RestartPlayer(AController* NewPlayer) override;
 
-	virtual void BeginMatchPhase() PURE_VIRTUAL(ABaseMatchGameMode::BeginMatchPhase, );
-	virtual void CompleteMatch(const bool bIsMatchSuccess) PURE_VIRTUAL(ABaseMatchGameMode::CompleteMatch, );
+protected:
+	// Child game modes rely on these being present (they override them).
+	virtual void BeginMatchPhase();
+	virtual void CompleteMatch(bool bSuccess);
 
-public:
-	int32 GetPlayerTeamID() const;
-	int32 GetOpposingTeamID(const int32 TeamID) const;
+protected:
+	UPROPERTY(EditDefaultsOnly, Category="Match")
+	float MatchStartDelay = 0.0f;
 
-private:
+	UPROPERTY(EditDefaultsOnly, Category="Teams")
+	int32 PlayerTeamID = 0;
+
+	UPROPERTY(EditDefaultsOnly, Category="Teams")
+	int32 TeamA_ID = 0;
+
+	UPROPERTY(EditDefaultsOnly, Category="Teams")
+	int32 TeamB_ID = 1;
+
+	// Targeting policy: how many agents per team are allowed to chase player pawns.
+	UPROPERTY(EditDefaultsOnly, Category="AI|Targeting")
+	int32 DefaultPlayerChaseBudgetPerTeam = 4;
+
+	// AI ship pools per team.
+	UPROPERTY(EditDefaultsOnly, Category="AI|Spawning")
+	TArray<TSubclassOf<AShipPawn>> AllowedAISpawnableShips_TeamA;
+
+	UPROPERTY(EditDefaultsOnly, Category="AI|Spawning")
+	TArray<TSubclassOf<AShipPawn>> AllowedAISpawnableShips_TeamB;
+
+protected:
+	UFUNCTION()
 	void StartMatchAfterDelay();
-	void SpawnAIForTeam(const int32 TeamID);
+
+protected:
 	void SpawnAllAI();
+	void SpawnAIForTeam(int32 TeamID);
 
-	void InitializePools();
+	bool TrySpawnAIShipAtStart(ATeamPlayerStart* PlayerStart, int32 TeamID);
+	void AssignAIPlayerStateTeam(AShipPawn* SpawnedShip, int32 TeamID);
 
-	TArray<ATeamPlayerStart*> FindAllPlayerStartsForTeam(const int32 TeamID) const;
-	TSubclassOf<AShipPawn> GetRandomAISpawnClass(const int32 TeamID) const;
+	TArray<ATeamPlayerStart*> FindAllPlayerStartsForTeam(int32 TeamID) const;
 
-	bool TrySpawnAIShipAtStart(class ATeamPlayerStart* PlayerStart, const int32 TeamID);
-	void AssignAIPlayerStateTeam(class AShipPawn* SpawnedShip, const int32 TeamID);
-
+	TSubclassOf<AShipPawn> GetRandomAISpawnClass(int32 TeamID) const;
 	bool IsValidAISpawnClass(const TSubclassOf<AShipPawn>& ShipClass) const;
 
 	UShipSpawnSubsystem* GetShipSpawnSubsystem() const;
 
+	void InitializePools();
 	void CleanupSpawnedShips();
+
+	void ConfigureAIChaseBudgets();
+
+private:
+	FTimerHandle MatchStartTimerHandle;
+
+	UPROPERTY()
+	bool bHasSpawnedAI = false;
 };

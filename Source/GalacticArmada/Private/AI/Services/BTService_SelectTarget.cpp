@@ -209,8 +209,9 @@ uint8 UBTService_SelectTarget::ResolveTeamIdFromPlayerState(const AAIController*
 		return 0;
 	}
 
-	const int32 Team = ShipPS->GetTeamID();
-	return (uint8)FMath::Clamp(Team, 0, 255);
+	// const int32 Team = ShipPS->GetTeamID();
+	// return (uint8)FMath::Clamp(Team, 0, 255);
+	return 0;
 }
 
 void UBTService_SelectTarget::RegisterIfNeeded(UAICommandSubsystem* Subsys, APawn* Pawn, const uint8 TeamId)

@@ -88,7 +88,7 @@ void AAIShipController::EnsurePlayerStateTeamFromPawn(APawn* InPawn)
 	}
 
 	const int32 TeamId = Health->GetTeamId();
-	SPS->SetTeamID(TeamId);
+	//SPS->SetTeamID(TeamId);
 
 	UE_LOG(LogTemp, Warning, TEXT("[AIShipController] Assigned PlayerState TeamID=%d for %s (PS=%s)"),
 		TeamId, *InPawn->GetName(), *SPS->GetName());

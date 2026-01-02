@@ -11,8 +11,3 @@ void AShipPlayerState::AddDeath()
 {
 	Deaths++;
 }
-
-void AShipPlayerState::SetTeamID(const int32 InTeamID)
-{
-	TeamID = InTeamID;
-}

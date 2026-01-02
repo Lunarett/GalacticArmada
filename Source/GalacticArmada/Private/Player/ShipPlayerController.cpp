@@ -2,12 +2,11 @@
 
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
+
 #include "Engine/World.h"
 #include "Player/ShipPawn.h"
 #include "Player/ShipPlayerCameraManager.h"
-#include "Player/ShipPlayerState.h"
 #include "Systems/AICommandSubsystem.h"
-#include "Components/HealthComponent.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogShipPC, Log, All);
 
@@ -24,14 +23,38 @@ void AShipPlayerController::BeginPlay()
 	SetInputMode(FInputModeGameOnly());
 	bShowMouseCursor = false;
 
-	const ULocalPlayer* ShipLocalPlayer = GetLocalPlayer();
-	if (!ShipLocalPlayer)
+	InitializeInputMapping();
+	EnsureSubsystemsCached();
+}
+
+void AShipPlayerController::EnsureSubsystemsCached()
+{
+	if (AICommandSubsystem)
 	{
 		return;
 	}
 
-	UEnhancedInputLocalPlayerSubsystem* Subsystem = ShipLocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
-	if (!Subsystem)
+	UWorld* const World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	AICommandSubsystem = World->GetSubsystem<UAICommandSubsystem>();
+}
+
+void AShipPlayerController::InitializeInputMapping()
+{
+	const ULocalPlayer* const LocalPlayer = GetLocalPlayer();
+	if (!LocalPlayer)
+	{
+		return;
+	}
+
+	UEnhancedInputLocalPlayerSubsystem* const InputSubsystem =
+		LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
+
+	if (!InputSubsystem)
 	{
 		return;
 	}
@@ -41,7 +64,7 @@ void AShipPlayerController::BeginPlay()
 		return;
 	}
 
-	Subsystem->AddMappingContext(ShipInputMappingContext, 0);
+	InputSubsystem->AddMappingContext(ShipInputMappingContext, 0);
 }
 
 void AShipPlayerController::OnPossess(APawn* InPawn)
@@ -49,72 +72,135 @@ void AShipPlayerController::OnPossess(APawn* InPawn)
 	Super::OnPossess(InPawn);
 
 	ShipPawn = Cast<AShipPawn>(InPawn);
-	if (!ShipPawn)
-	{
-		return;
-	}
-
-	UWorld* World = GetWorld();
-	if (!World)
-	{
-		return;
-	}
-
-	UAICommandSubsystem* Cmd = World->GetSubsystem<UAICommandSubsystem>();
-	if (!Cmd)
-	{
-		return;
-	}
-
-	int32 Team = 0;
-
-	const UHealthComponent* Health = ShipPawn->FindComponentByClass<UHealthComponent>();
-	if (Health)
-	{
-		Team = Health->GetTeamId();
-	}
-
-	const AShipPlayerState* PS = GetPlayerState<AShipPlayerState>();
-	if (PS)
-	{
-		Team = PS->GetTeamID();
-	}
-
-	const uint8 TeamId = (uint8)FMath::Clamp(Team, 0, 255);
-	Cmd->RegisterAgent(InPawn, TeamId);
+	RegisterPawnAsAgent();
 }
 
 void AShipPlayerController::OnUnPossess()
 {
-	if (!ShipPawn)
-	{
-		Super::OnUnPossess();
-		return;
-	}
-
-	UWorld* World = GetWorld();
-	if (!World)
-	{
-		Super::OnUnPossess();
-		ShipPawn = nullptr;
-		return;
-	}
-
-	UAICommandSubsystem* Cmd = World->GetSubsystem<UAICommandSubsystem>();
-	if (Cmd)
-	{
-		Cmd->UnregisterAgent(ShipPawn);
-	}
+	UnregisterPawnAsAgent();
 
 	Super::OnUnPossess();
 	ShipPawn = nullptr;
 }
 
+void AShipPlayerController::RegisterPawnAsAgent()
+{
+	if (!ShipPawn)
+	{
+		return;
+	}
+
+	EnsureSubsystemsCached();
+
+	if (!AICommandSubsystem)
+	{
+		return;
+	}
+
+	const uint8 TeamValue = TeamId.GetId();
+	AICommandSubsystem->RegisterAgent(ShipPawn, TeamValue);
+}
+
+void AShipPlayerController::UnregisterPawnAsAgent()
+{
+	if (!ShipPawn)
+	{
+		return;
+	}
+
+	EnsureSubsystemsCached();
+
+	if (!AICommandSubsystem)
+	{
+		return;
+	}
+
+	AICommandSubsystem->UnregisterAgent(ShipPawn);
+}
+
+// --------------------------
+// IGenericTeamAgentInterface
+// --------------------------
+
+FGenericTeamId AShipPlayerController::GetGenericTeamId() const
+{
+	return TeamId;
+}
+
+void AShipPlayerController::SetGenericTeamId(const FGenericTeamId& NewTeamId)
+{
+	if (TeamId == NewTeamId)
+	{
+		return;
+	}
+
+	TeamId = NewTeamId;
+
+	// If we are currently possessing a pawn, update its registration.
+	UnregisterPawnAsAgent();
+	RegisterPawnAsAgent();
+}
+
+FGenericTeamId AShipPlayerController::ResolveTeamFromActor(const AActor& Actor) const
+{
+	const IGenericTeamAgentInterface* const DirectTeamAgent = Cast<IGenericTeamAgentInterface>(&Actor);
+	if (DirectTeamAgent)
+	{
+		return DirectTeamAgent->GetGenericTeamId();
+	}
+
+	const APawn* const OtherPawn = Cast<APawn>(&Actor);
+	if (!OtherPawn)
+	{
+		return FGenericTeamId::NoTeam;
+	}
+
+	const AController* const OtherController = OtherPawn->GetController();
+	if (!OtherController)
+	{
+		return FGenericTeamId::NoTeam;
+	}
+
+	const IGenericTeamAgentInterface* const ControllerTeamAgent = Cast<IGenericTeamAgentInterface>(OtherController);
+	if (!ControllerTeamAgent)
+	{
+		return FGenericTeamId::NoTeam;
+	}
+
+	return ControllerTeamAgent->GetGenericTeamId();
+}
+
+ETeamAttitude::Type AShipPlayerController::GetTeamAttitudeTowards(const AActor& Other) const
+{
+	const FGenericTeamId OtherTeam = ResolveTeamFromActor(Other);
+
+	if (TeamId == FGenericTeamId::NoTeam)
+	{
+		return ETeamAttitude::Neutral;
+	}
+
+	if (OtherTeam == FGenericTeamId::NoTeam)
+	{
+		return ETeamAttitude::Neutral;
+	}
+
+	if (TeamId == OtherTeam)
+	{
+		return ETeamAttitude::Friendly;
+	}
+
+	return ETeamAttitude::Hostile;
+}
+
+// --------------------------
+// Input bindings
+// --------------------------
+
 void AShipPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
 
-	UEnhancedInputComponent* EIC = Cast<UEnhancedInputComponent>(InputComponent);
+	UEnhancedInputComponent* const EIC = Cast<UEnhancedInputComponent>(InputComponent);
 	if (!EIC)
 	{
 		return;

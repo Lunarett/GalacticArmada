@@ -179,7 +179,10 @@ bool ATurret::IsEnemy(const AActor* OtherActor) const
 		return false;
 	}
 
-	return ShipPlayerState->GetTeamID() != TeamID;
+	// return ShipPlayerState->GetTeamID() != TeamID;
+
+	// TODO: Change this to use proper UE team
+	return false;
 }
 
 float ATurret::ClampPitch(float DesiredPitch) const

@@ -21,16 +21,10 @@ private:
 	UPROPERTY()
 	int32 Deaths;
 
-
-	UPROPERTY()
-	int32 TeamID;
-
 public:
 	void AddKill();
 	void AddDeath();
-	void SetTeamID(const int32 InTeamID);
 
 	FORCEINLINE int32 GetKills() const { return Kills; }
 	FORCEINLINE int32 GetDeaths() const { return Deaths; }
-	FORCEINLINE int32 GetTeamID() const { return TeamID; }
 };

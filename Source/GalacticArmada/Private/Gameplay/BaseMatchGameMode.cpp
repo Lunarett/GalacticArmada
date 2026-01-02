@@ -9,7 +9,6 @@
 #include "Systems/ShipSpawnSubsystem.h"
 #include "Systems/AICommandSubsystem.h"
 
-#include "Components/HealthComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
@@ -51,11 +50,8 @@ void ABaseMatchGameMode::PostLogin(APlayerController* NewPlayer)
 		return;
 	}
 
-	AShipPlayerState* PS = Cast<AShipPlayerState>(NewPlayer->PlayerState);
-	if (PS)
-	{
-		PS->SetTeamID(PlayerTeamID);
-	}
+	// Controller is the only authoritative team holder.
+	ApplyTeamToController(NewPlayer, FGenericTeamId(PlayerTeamId));
 
 	RestartPlayer(NewPlayer);
 
@@ -95,14 +91,14 @@ void ABaseMatchGameMode::RestartPlayer(AController* NewPlayer)
 {
 	if (!NewPlayer)
 	{
-		UE_LOG(LogTemp, Error, TEXT("RestartPlayer: Invalid Player Controller"));
+		UE_LOG(LogTemp, Error, TEXT("RestartPlayer: Invalid controller"));
 		return;
 	}
 
 	AActor* StartSpot = ChoosePlayerStart(NewPlayer);
 	if (!StartSpot)
 	{
-		UE_LOG(LogTemp, Error, TEXT("RestartPlayer: Could not find valid Player Start"));
+		UE_LOG(LogTemp, Error, TEXT("RestartPlayer: Could not find valid PlayerStart"));
 		return;
 	}
 
@@ -123,27 +119,42 @@ AActor* ABaseMatchGameMode::ChoosePlayerStart_Implementation(AController* Player
 		return Super::ChoosePlayerStart_Implementation(Player);
 	}
 
-	TArray<ATeamPlayerStart*> Starts = FindAllPlayerStartsForTeam(PlayerTeamID);
+	const FGenericTeamId TeamId = GetControllerTeamId(Player);
+	const uint8 RawTeamId = TeamId.GetId();
 
-	for (ATeamPlayerStart* Start : Starts)
+	const TArray<ATeamPlayerStart*> TeamStarts = FindAllPlayerStartsForTeam(RawTeamId);
+	if (TeamStarts.Num() <= 0)
+	{
+		return Super::ChoosePlayerStart_Implementation(Player);
+	}
+
+	// Prefer "player-only" starts first.
+	TArray<ATeamPlayerStart*> PlayerOnlyStarts;
+	PlayerOnlyStarts.Reserve(TeamStarts.Num());
+
+	for (ATeamPlayerStart* const Start : TeamStarts)
 	{
 		if (!Start)
 		{
 			continue;
 		}
 
-		if (!Start->GetIsPlayerOnly())
+		if (Start->IsPlayerOnly())
 		{
-			continue;
+			PlayerOnlyStarts.Add(Start);
 		}
-
-		return Start;
 	}
 
-	if (Starts.Num() > 0)
+	ATeamPlayerStart* SelectedStart = PickRandomStart(PlayerOnlyStarts);
+	if (SelectedStart)
 	{
-		const int32 Index = FMath::RandRange(0, Starts.Num() - 1);
-		return Starts[Index];
+		return SelectedStart;
+	}
+
+	SelectedStart = PickRandomStart(TeamStarts);
+	if (SelectedStart)
+	{
+		return SelectedStart;
 	}
 
 	return Super::ChoosePlayerStart_Implementation(Player);
@@ -161,14 +172,14 @@ APawn* ABaseMatchGameMode::SpawnDefaultPawnFor_Implementation(AController* NewPl
 		return nullptr;
 	}
 
-	UGalacticGameInstance* GameInstance = GetGameInstance<UGalacticGameInstance>();
+	UGalacticGameInstance* const GameInstance = GetGameInstance<UGalacticGameInstance>();
 	if (!GameInstance)
 	{
 		return nullptr;
 	}
 
 	const TSubclassOf<AShipPawn> ShipClass = GameInstance->GetDefaultPlayerShipClass();
-	const bool bValidShipClass = IsValidAISpawnClass(ShipClass);
+	const bool bValidShipClass = IsValidShipClass(ShipClass);
 
 	if (!bValidShipClass)
 	{
@@ -176,14 +187,23 @@ APawn* ABaseMatchGameMode::SpawnDefaultPawnFor_Implementation(AController* NewPl
 		return nullptr;
 	}
 
-	UShipSpawnSubsystem* ShipSpawner = GetShipSpawnSubsystem();
+	UShipSpawnSubsystem* const ShipSpawner = GetShipSpawnSubsystem();
 	if (!ShipSpawner)
 	{
 		UE_LOG(LogTemp, Error, TEXT("SpawnDefaultPawnFor: Missing ShipSpawnSubsystem"));
 		return nullptr;
 	}
 
-	AShipPawn* SpawnedShip = ShipSpawner->SpawnShip(ShipClass, StartSpot->GetActorTransform(), PlayerTeamID, false);
+	// Team is owned by controller; the spawn call may still want a team value for internal logic.
+	const FGenericTeamId TeamId = GetControllerTeamId(NewPlayer);
+
+	AShipPawn* const SpawnedShip = ShipSpawner->SpawnShip(
+		ShipClass,
+		StartSpot->GetActorTransform(),
+		static_cast<int32>(TeamId.GetId()),
+		false
+	);
+
 	if (!SpawnedShip)
 	{
 		UE_LOG(LogTemp, Error, TEXT("SpawnDefaultPawnFor: Failed to spawn player ship"));
@@ -196,98 +216,95 @@ APawn* ABaseMatchGameMode::SpawnDefaultPawnFor_Implementation(AController* NewPl
 
 void ABaseMatchGameMode::SpawnAllAI()
 {
-	SpawnAIForTeam(TeamA_ID);
-	SpawnAIForTeam(TeamB_ID);
+	SpawnAIForTeam(TeamAId);
+	SpawnAIForTeam(TeamBId);
 }
 
-void ABaseMatchGameMode::SpawnAIForTeam(const int32 TeamID)
+void ABaseMatchGameMode::SpawnAIForTeam(const uint8 TeamId)
 {
-	const TArray<ATeamPlayerStart*> Starts = FindAllPlayerStartsForTeam(TeamID);
+	const TArray<ATeamPlayerStart*> Starts = FindAllPlayerStartsForTeam(TeamId);
 
-	for (ATeamPlayerStart* Start : Starts)
+	for (const ATeamPlayerStart* const Start : Starts)
 	{
 		if (!Start)
 		{
 			continue;
 		}
 
-		if (Start->GetIsPlayerOnly())
+		if (Start->IsPlayerOnly())
 		{
 			continue;
 		}
 
-		const bool bSpawned = TrySpawnAIShipAtStart(Start, TeamID);
+		const bool bSpawned = TrySpawnAIShipAtStart(Start, TeamId);
 		if (!bSpawned)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("SpawnAIForTeam: Failed to spawn AI for Team %d"), TeamID);
+			UE_LOG(LogTemp, Warning, TEXT("SpawnAIForTeam: Failed to spawn AI for Team %d"), static_cast<int32>(TeamId));
 		}
 	}
 }
 
-bool ABaseMatchGameMode::TrySpawnAIShipAtStart(ATeamPlayerStart* PlayerStart, const int32 TeamID)
+bool ABaseMatchGameMode::TrySpawnAIShipAtStart(const ATeamPlayerStart* PlayerStart, const uint8 TeamId)
 {
 	if (!PlayerStart)
 	{
 		return false;
 	}
 
-	const TSubclassOf<AShipPawn> ShipClass = GetRandomAISpawnClass(TeamID);
-	const bool bValid = IsValidAISpawnClass(ShipClass);
+	const TSubclassOf<AShipPawn> ShipClass = GetRandomAISpawnClass(TeamId);
+	const bool bValid = IsValidShipClass(ShipClass);
 
 	if (!bValid)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("TrySpawnAIShipAtStart: Invalid ship class for team %d"), TeamID);
+		UE_LOG(LogTemp, Warning, TEXT("TrySpawnAIShipAtStart: Invalid ship class for team %d"), static_cast<int32>(TeamId));
 		return false;
 	}
 
-	UShipSpawnSubsystem* ShipSpawner = GetShipSpawnSubsystem();
+	UShipSpawnSubsystem* const ShipSpawner = GetShipSpawnSubsystem();
 	if (!ShipSpawner)
 	{
 		return false;
 	}
 
-	AShipPawn* SpawnedShip = ShipSpawner->SpawnShip(ShipClass, PlayerStart->GetActorTransform(), TeamID, true);
+	AShipPawn* const SpawnedShip = ShipSpawner->SpawnShip(
+		ShipClass,
+		PlayerStart->GetActorTransform(),
+		static_cast<int32>(TeamId),
+		true
+	);
+
 	if (!SpawnedShip)
 	{
 		return false;
 	}
 
-	AssignAIPlayerStateTeam(SpawnedShip, TeamID);
+	// Controller owns team. If the spawned AI already has a controller, apply team to it.
+	AController* const AIController = SpawnedShip->GetController();
+	if (AIController)
+	{
+		ApplyTeamToController(AIController, FGenericTeamId(TeamId));
+	}
+
 	return true;
 }
 
-void ABaseMatchGameMode::AssignAIPlayerStateTeam(AShipPawn* SpawnedShip, const int32 TeamID)
-{
-	if (!SpawnedShip)
-	{
-		return;
-	}
-
-	AShipPlayerState* ShipState = SpawnedShip->GetPlayerState<AShipPlayerState>();
-	if (!ShipState)
-	{
-		return;
-	}
-
-	ShipState->SetTeamID(TeamID);
-}
-
-TArray<ATeamPlayerStart*> ABaseMatchGameMode::FindAllPlayerStartsForTeam(const int32 TeamID) const
+TArray<ATeamPlayerStart*> ABaseMatchGameMode::FindAllPlayerStartsForTeam(const uint8 TeamId) const
 {
 	TArray<AActor*> AllStarts;
 	UGameplayStatics::GetAllActorsOfClass(GetWorld(), ATeamPlayerStart::StaticClass(), AllStarts);
 
 	TArray<ATeamPlayerStart*> FilteredStarts;
+	FilteredStarts.Reserve(AllStarts.Num());
 
-	for (AActor* Actor : AllStarts)
+	for (AActor* const Actor : AllStarts)
 	{
-		ATeamPlayerStart* Start = Cast<ATeamPlayerStart>(Actor);
+		ATeamPlayerStart* const Start = Cast<ATeamPlayerStart>(Actor);
 		if (!Start)
 		{
 			continue;
 		}
 
-		if (Start->GetTeamID() != TeamID)
+		if (Start->GetTeamId() != TeamId)
 		{
 			continue;
 		}
@@ -298,16 +315,27 @@ TArray<ATeamPlayerStart*> ABaseMatchGameMode::FindAllPlayerStartsForTeam(const i
 	return FilteredStarts;
 }
 
-TSubclassOf<AShipPawn> ABaseMatchGameMode::GetRandomAISpawnClass(const int32 TeamID) const
+ATeamPlayerStart* ABaseMatchGameMode::PickRandomStart(const TArray<ATeamPlayerStart*>& Starts) const
+{
+	const int32 NumStarts = Starts.Num();
+	if (NumStarts <= 0)
+	{
+		return nullptr;
+	}
+
+	const int32 Index = FMath::RandRange(0, NumStarts - 1);
+	return Starts[Index];
+}
+
+TSubclassOf<AShipPawn> ABaseMatchGameMode::GetRandomAISpawnClass(const uint8 TeamId) const
 {
 	const TArray<TSubclassOf<AShipPawn>>* PoolPtr = nullptr;
 
-	if (TeamID == TeamA_ID)
+	if (TeamId == TeamAId)
 	{
 		PoolPtr = &AllowedAISpawnableShips_TeamA;
 	}
-
-	if (TeamID == TeamB_ID)
+	else if (TeamId == TeamBId)
 	{
 		PoolPtr = &AllowedAISpawnableShips_TeamB;
 	}
@@ -328,7 +356,7 @@ TSubclassOf<AShipPawn> ABaseMatchGameMode::GetRandomAISpawnClass(const int32 Tea
 	return Pool[Index];
 }
 
-bool ABaseMatchGameMode::IsValidAISpawnClass(const TSubclassOf<AShipPawn>& ShipClass) const
+bool ABaseMatchGameMode::IsValidShipClass(const TSubclassOf<AShipPawn>& ShipClass) const
 {
 	if (!ShipClass)
 	{
@@ -340,7 +368,7 @@ bool ABaseMatchGameMode::IsValidAISpawnClass(const TSubclassOf<AShipPawn>& ShipC
 
 UShipSpawnSubsystem* ABaseMatchGameMode::GetShipSpawnSubsystem() const
 {
-	UWorld* World = GetWorld();
+	UWorld* const World = GetWorld();
 	if (!World)
 	{
 		return nullptr;
@@ -351,81 +379,119 @@ UShipSpawnSubsystem* ABaseMatchGameMode::GetShipSpawnSubsystem() const
 
 void ABaseMatchGameMode::InitializePools()
 {
-	UWorld* World = GetWorld();
+	UWorld* const World = GetWorld();
 	if (!World)
 	{
 		return;
 	}
 
-	UActorPoolSubsystem* Pool = World->GetSubsystem<UActorPoolSubsystem>();
+	UActorPoolSubsystem* const Pool = World->GetSubsystem<UActorPoolSubsystem>();
 	if (!Pool)
 	{
 		return;
 	}
 
-	UGalacticGameInstance* GameInstance = GetGameInstance<UGalacticGameInstance>();
+	UGalacticGameInstance* const GameInstance = GetGameInstance<UGalacticGameInstance>();
 	if (GameInstance)
 	{
 		const TSubclassOf<AShipPawn> PlayerShipClass = GameInstance->GetDefaultPlayerShipClass();
-		if (IsValidAISpawnClass(PlayerShipClass))
+		if (IsValidShipClass(PlayerShipClass))
 		{
 			Pool->InitializePool(*PlayerShipClass, 1);
 		}
 	}
 
-	const int32 TeamAStarts = FindAllPlayerStartsForTeam(TeamA_ID).Num();
-	const int32 TeamBStarts = FindAllPlayerStartsForTeam(TeamB_ID).Num();
+	int32 TeamA_AIStarts = 0;
+	int32 TeamB_AIStarts = 0;
+
+	{
+		const TArray<ATeamPlayerStart*> TeamAStarts = FindAllPlayerStartsForTeam(TeamAId);
+		for (const ATeamPlayerStart* const Start : TeamAStarts)
+		{
+			if (!Start)
+			{
+				continue;
+			}
+
+			if (Start->IsPlayerOnly())
+			{
+				continue;
+			}
+
+			TeamA_AIStarts++;
+		}
+	}
+
+	{
+		const TArray<ATeamPlayerStart*> TeamBStarts = FindAllPlayerStartsForTeam(TeamBId);
+		for (const ATeamPlayerStart* const Start : TeamBStarts)
+		{
+			if (!Start)
+			{
+				continue;
+			}
+
+			if (Start->IsPlayerOnly())
+			{
+				continue;
+			}
+
+			TeamB_AIStarts++;
+		}
+	}
 
 	for (const TSubclassOf<AShipPawn>& C : AllowedAISpawnableShips_TeamA)
 	{
-		if (IsValidAISpawnClass(C))
+		if (IsValidShipClass(C))
 		{
-			Pool->InitializePool(*C, TeamAStarts);
+			Pool->InitializePool(*C, TeamA_AIStarts);
 		}
 	}
 
 	for (const TSubclassOf<AShipPawn>& C : AllowedAISpawnableShips_TeamB)
 	{
-		if (IsValidAISpawnClass(C))
+		if (IsValidShipClass(C))
 		{
-			Pool->InitializePool(*C, TeamBStarts);
+			Pool->InitializePool(*C, TeamB_AIStarts);
 		}
 	}
 }
 
 void ABaseMatchGameMode::CleanupSpawnedShips()
 {
-	UShipSpawnSubsystem* ShipSpawner = GetShipSpawnSubsystem();
+	UShipSpawnSubsystem* const ShipSpawner = GetShipSpawnSubsystem();
 	if (!ShipSpawner)
 	{
 		return;
 	}
 
 	const TArray<TObjectPtr<AShipPawn>> ShipsCopy = ShipSpawner->GetAllShips();
-	for (AShipPawn* Ship : ShipsCopy)
+	for (AShipPawn* const Ship : ShipsCopy)
 	{
-		if (IsValid(Ship))
+		if (!IsValid(Ship))
 		{
-			ShipSpawner->DespawnShip(Ship);
+			continue;
 		}
+
+		ShipSpawner->DespawnShip(Ship);
 	}
 }
 
 void ABaseMatchGameMode::ConfigureAIChaseBudgets()
 {
-	UWorld* World = GetWorld();
+	UWorld* const World = GetWorld();
 	if (!World)
 	{
 		return;
 	}
 
-	UAICommandSubsystem* Cmd = World->GetSubsystem<UAICommandSubsystem>();
+	UAICommandSubsystem* const Cmd = World->GetSubsystem<UAICommandSubsystem>();
 	if (!Cmd)
 	{
 		return;
 	}
 
-	UShipSpawnSubsystem* Spawner = World->GetSubsystem<UShipSpawnSubsystem>();
+	UShipSpawnSubsystem* const Spawner = World->GetSubsystem<UShipSpawnSubsystem>();
 	if (!Spawner)
 	{
 		return;
@@ -434,27 +500,25 @@ void ABaseMatchGameMode::ConfigureAIChaseBudgets()
 	TMap<uint8, int32> TeamSizes;
 
 	const TArray<TObjectPtr<AShipPawn>>& Ships = Spawner->GetAllShips();
-	for (const AShipPawn* Ship : Ships)
+	for (const AShipPawn* const Ship : Ships)
 	{
 		if (!IsValid(Ship))
 		{
 			continue;
 		}
 
-		const UHealthComponent* Health = Ship->FindComponentByClass<UHealthComponent>();
-		if (!Health)
+		const FGenericTeamId TeamId = GetShipTeamIdFromController(Ship);
+		if (TeamId == FGenericTeamId::NoTeam)
 		{
 			continue;
 		}
 
-		const int32 RawTeamId = Health->GetTeamId();
-		const uint8 TeamId = (uint8)FMath::Clamp(RawTeamId, 0, 255);
-
-		int32& Count = TeamSizes.FindOrAdd(TeamId);
+		const uint8 Key = TeamId.GetId();
+		int32& Count = TeamSizes.FindOrAdd(Key);
 		Count++;
 	}
 
-	for (const auto& Pair : TeamSizes)
+	for (const TPair<uint8, int32>& Pair : TeamSizes)
 	{
 		const uint8 TeamId = Pair.Key;
 		const int32 TeamSize = Pair.Value;
@@ -464,4 +528,58 @@ void ABaseMatchGameMode::ConfigureAIChaseBudgets()
 
 		Cmd->SetPlayerChaseBudgetForTeam(TeamId, Budget);
 	}
+}
+
+void ABaseMatchGameMode::ApplyTeamToController(AController* Controller, const FGenericTeamId& TeamId) const
+{
+	if (!Controller)
+	{
+		return;
+	}
+
+	IGenericTeamAgentInterface* const TeamAgent = Cast<IGenericTeamAgentInterface>(Controller);
+	if (!TeamAgent)
+	{
+		return;
+	}
+
+	TeamAgent->SetGenericTeamId(TeamId);
+}
+
+FGenericTeamId ABaseMatchGameMode::GetControllerTeamId(const AController* Controller) const
+{
+	if (!Controller)
+	{
+		return FGenericTeamId(PlayerTeamId);
+	}
+
+	const IGenericTeamAgentInterface* const TeamAgent = Cast<IGenericTeamAgentInterface>(Controller);
+	if (!TeamAgent)
+	{
+		return FGenericTeamId(PlayerTeamId);
+	}
+
+	return TeamAgent->GetGenericTeamId();
+}
+
+FGenericTeamId ABaseMatchGameMode::GetShipTeamIdFromController(const AShipPawn* Ship) const
+{
+	if (!Ship)
+	{
+		return FGenericTeamId::NoTeam;
+	}
+
+	const AController* const Controller = Ship->GetController();
+	if (!Controller)
+	{
+		return FGenericTeamId::NoTeam;
+	}
+
+	const IGenericTeamAgentInterface* const TeamAgent = Cast<IGenericTeamAgentInterface>(Controller);
+	if (!TeamAgent)
+	{
+		return FGenericTeamId::NoTeam;
+	}
+
+	return TeamAgent->GetGenericTeamId();
 }

@@ -83,6 +83,8 @@ private:
 	/** Ensures AICommandSubsystem is cached (lazy, runs at most once successfully). */
 	void EnsureSubsystemsCached();
 
+	void PropagateTeamToPawn();
+
 	/** Adds the input mapping context to the local Enhanced Input subsystem. */
 	void InitializeInputMapping();
 

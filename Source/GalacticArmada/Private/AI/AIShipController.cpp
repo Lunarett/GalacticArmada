@@ -1,118 +1,227 @@
+// AIShipController.cpp
+
 #include "AI/AIShipController.h"
-
-#include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
-#include "BehaviorTree/BlackboardData.h"
+#include "BrainComponent.h"
+#include "Engine/World.h"
+#include "GameFramework/Pawn.h"
+#include "Systems/AICommandSubsystem.h"
 
-#include "Components/HealthComponent.h"
-#include "Player/ShipPawn.h"
-#include "Player/ShipPlayerState.h"
+DEFINE_LOG_CATEGORY_STATIC(LogAIShipController, Log, All);
 
 AAIShipController::AAIShipController()
 {
-	PrimaryActorTick.bCanEverTick = false;
+}
 
-	// Critical: AI controllers do NOT always get a PlayerState unless you ask for it.
-	bWantsPlayerState = true;
+void AAIShipController::EnsureSubsystemsCached()
+{
+	if (AICommandSubsystem)
+	{
+		return;
+	}
+
+	UWorld* const World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	AICommandSubsystem = World->GetSubsystem<UAICommandSubsystem>();
 }
 
 void AAIShipController::OnPossess(APawn* InPawn)
 {
 	Super::OnPossess(InPawn);
 
-	if (!InPawn)
-	{
-		return;
-	}
+	ControlledPawn = InPawn;
+	bStartedBehavior = false;
 
-	EnsurePlayerStateTeamFromPawn(InPawn);
+	EnsureSubsystemsCached();
 
-	if (!BlackboardAsset || !BehaviorTreeAsset)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[AIShipController] Missing BlackboardAsset or BehaviorTreeAsset."));
-		return;
-	}
+	PropagateTeamToPawn();
+	RegisterPawnAsAgent();
 
-	UBlackboardComponent* BlackboardComp = nullptr;
-	if (!UseBlackboard(BlackboardAsset, BlackboardComp) || !BlackboardComp)
-	{
-		UE_LOG(LogTemp, Error, TEXT("[AIShipController] UseBlackboard failed."));
-		return;
-	}
-
-	Blackboard = BlackboardComp;
-
-	if (!RunBehaviorTree(BehaviorTreeAsset))
-	{
-		UE_LOG(LogTemp, Error, TEXT("[AIShipController] RunBehaviorTree failed."));
-	}
+	StartBrainIfNeeded();
 }
 
 void AAIShipController::OnUnPossess()
 {
-	if (BrainComponent)
-	{
-		BrainComponent->StopLogic(TEXT("UnPossess"));
-	}
+	StopBrain();
+	UnregisterPawnAsAgent();
 
 	Super::OnUnPossess();
+
+	ControlledPawn = nullptr;
+	bStartedBehavior = false;
 }
 
-void AAIShipController::EnsurePlayerStateTeamFromPawn(APawn* InPawn)
+// --------------------------
+// IGenericTeamAgentInterface
+// --------------------------
+
+FGenericTeamId AAIShipController::GetGenericTeamId() const
 {
-	if (!InPawn)
+	return TeamId;
+}
+
+void AAIShipController::SetGenericTeamId(const FGenericTeamId& NewTeamId)
+{
+	if (TeamId == NewTeamId)
 	{
 		return;
 	}
 
-	// If PlayerState didn't get created yet, force it.
-	if (!PlayerState)
+	TeamId = NewTeamId;
+
+	// Keep pawn + subsystem registration in sync if we are possessing.
+	PropagateTeamToPawn();
+
+	UnregisterPawnAsAgent();
+	RegisterPawnAsAgent();
+}
+
+FGenericTeamId AAIShipController::ResolveTeamFromActor(const AActor& Actor) const
+{
+	const IGenericTeamAgentInterface* const DirectTeamAgent = Cast<IGenericTeamAgentInterface>(&Actor);
+	if (DirectTeamAgent)
 	{
-		InitPlayerState();
+		return DirectTeamAgent->GetGenericTeamId();
 	}
 
-	AShipPlayerState* SPS = Cast<AShipPlayerState>(PlayerState);
-	if (!SPS)
+	const APawn* const OtherPawn = Cast<APawn>(&Actor);
+	if (!OtherPawn)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[AIShipController] PlayerState is missing or not AShipPlayerState. PS=%s"),
-			PlayerState ? *PlayerState->GetName() : TEXT("NULL"));
-		return;
+		return FGenericTeamId::NoTeam;
 	}
 
-	const UHealthComponent* Health = InPawn->FindComponentByClass<UHealthComponent>();
-	if (!Health)
+	const AController* const OtherController = OtherPawn->GetController();
+	if (!OtherController)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[AIShipController] No HealthComponent on %s. TeamID not assigned to PlayerState."),
-			*InPawn->GetName());
-		return;
+		return FGenericTeamId::NoTeam;
 	}
 
-	const int32 TeamId = Health->GetTeamId();
-	//SPS->SetTeamID(TeamId);
+	const IGenericTeamAgentInterface* const ControllerTeamAgent = Cast<IGenericTeamAgentInterface>(OtherController);
+	if (!ControllerTeamAgent)
+	{
+		return FGenericTeamId::NoTeam;
+	}
 
-	UE_LOG(LogTemp, Warning, TEXT("[AIShipController] Assigned PlayerState TeamID=%d for %s (PS=%s)"),
-		TeamId, *InPawn->GetName(), *SPS->GetName());
+	return ControllerTeamAgent->GetGenericTeamId();
 }
 
 ETeamAttitude::Type AAIShipController::GetTeamAttitudeTowards(const AActor& Other) const
 {
-	const AShipPawn* MyShip = Cast<AShipPawn>(GetPawn());
-	const AShipPawn* OtherShip = Cast<AShipPawn>(&Other);
+	const FGenericTeamId OtherTeam = ResolveTeamFromActor(Other);
 
-	if (!MyShip || !OtherShip)
+	if (TeamId == FGenericTeamId::NoTeam)
 	{
 		return ETeamAttitude::Neutral;
 	}
 
-	const UHealthComponent* MyHealth = MyShip->FindComponentByClass<UHealthComponent>();
-	const UHealthComponent* OtherHealth = OtherShip->FindComponentByClass<UHealthComponent>();
-
-	if (!MyHealth || !OtherHealth)
+	if (OtherTeam == FGenericTeamId::NoTeam)
 	{
 		return ETeamAttitude::Neutral;
 	}
 
-	return (MyHealth->GetTeamId() == OtherHealth->GetTeamId())
-		? ETeamAttitude::Friendly
-		: ETeamAttitude::Hostile;
+	if (TeamId == OtherTeam)
+	{
+		return ETeamAttitude::Friendly;
+	}
+
+	return ETeamAttitude::Hostile;
+}
+
+// --------------------------
+// Team propagation + agent reg
+// --------------------------
+
+void AAIShipController::PropagateTeamToPawn()
+{
+	if (!ControlledPawn)
+	{
+		return;
+	}
+
+	IGenericTeamAgentInterface* const PawnTeamAgent = Cast<IGenericTeamAgentInterface>(ControlledPawn);
+	if (!PawnTeamAgent)
+	{
+		return;
+	}
+
+	if (PawnTeamAgent->GetGenericTeamId() == TeamId)
+	{
+		return;
+	}
+
+	PawnTeamAgent->SetGenericTeamId(TeamId);
+}
+
+void AAIShipController::RegisterPawnAsAgent()
+{
+	if (!ControlledPawn)
+	{
+		return;
+	}
+
+	if (!AICommandSubsystem)
+	{
+		return;
+	}
+
+	AICommandSubsystem->RegisterAgent(ControlledPawn, TeamId.GetId());
+}
+
+void AAIShipController::UnregisterPawnAsAgent()
+{
+	if (!ControlledPawn)
+	{
+		return;
+	}
+
+	if (!AICommandSubsystem)
+	{
+		return;
+	}
+
+	AICommandSubsystem->UnregisterAgent(ControlledPawn);
+}
+
+// --------------------------
+// Behavior Tree basics
+// --------------------------
+
+void AAIShipController::StartBrainIfNeeded()
+{
+	if (bStartedBehavior)
+	{
+		return;
+	}
+
+	if (!BlackboardAsset || !BehaviorTreeAsset)
+	{
+		return;
+	}
+
+	UBlackboardComponent* BBComp = nullptr;
+	if (!UseBlackboard(BlackboardAsset, BBComp))
+	{
+		return;
+	}
+
+	if (!RunBehaviorTree(BehaviorTreeAsset))
+	{
+		return;
+	}
+
+	bStartedBehavior = true;
+}
+
+void AAIShipController::StopBrain()
+{
+	bStartedBehavior = false;
+
+	if (UBrainComponent* Brain = BrainComponent)
+	{
+		Brain->StopLogic(TEXT("UnPossess"));
+	}
 }

@@ -186,8 +186,9 @@ uint8 UBTService_SelectTarget::ResolveTeamIdFromHealth(const APawn* Pawn) const
 		return 0;
 	}
 
-	const int32 Team = Health->GetTeamId();
-	return (uint8)FMath::Clamp(Team, 0, 255);
+	//const int32 Team = Health->GetTeamId();
+	//return (uint8)FMath::Clamp(Team, 0, 255);
+	return 0;
 }
 
 uint8 UBTService_SelectTarget::ResolveTeamIdFromPlayerState(const AAIController* AI) const

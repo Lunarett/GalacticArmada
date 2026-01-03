@@ -43,6 +43,29 @@ void AShipPlayerController::EnsureSubsystemsCached()
 	AICommandSubsystem = World->GetSubsystem<UAICommandSubsystem>();
 }
 
+void AShipPlayerController::PropagateTeamToPawn()
+{
+	if (!ShipPawn)
+	{
+		return;
+	}
+
+	// Only propagate if the pawn actually implements the interface.
+	IGenericTeamAgentInterface* const PawnTeamAgent = Cast<IGenericTeamAgentInterface>(ShipPawn);
+	if (!PawnTeamAgent)
+	{
+		return;
+	}
+
+	// Avoid pointless churn.
+	if (PawnTeamAgent->GetGenericTeamId() == TeamId)
+	{
+		return;
+	}
+
+	PawnTeamAgent->SetGenericTeamId(TeamId);
+}
+
 void AShipPlayerController::InitializeInputMapping()
 {
 	const ULocalPlayer* const LocalPlayer = GetLocalPlayer();

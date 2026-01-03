@@ -1,3 +1,5 @@
+// AIShipController.h
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -5,9 +7,8 @@
 #include "AIShipController.generated.h"
 
 class UBehaviorTree;
-class UBlackboardComponent;
 class UBlackboardData;
-class AShipPlayerState;
+class UAICommandSubsystem;
 
 UCLASS()
 class GALACTICARMADA_API AAIShipController : public AAIController
@@ -17,19 +18,44 @@ class GALACTICARMADA_API AAIShipController : public AAIController
 public:
 	AAIShipController();
 
+	// AAIController already implements IGenericTeamAgentInterface
+	virtual FGenericTeamId GetGenericTeamId() const override;
+	virtual void SetGenericTeamId(const FGenericTeamId& NewTeamId) override;
+	virtual ETeamAttitude::Type GetTeamAttitudeTowards(const AActor& Other) const override;
+
 protected:
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnUnPossess() override;
 
-	// Ensures we have a PlayerState and the correct TeamID on it.
-	void EnsurePlayerStateTeamFromPawn(APawn* InPawn);
+protected:
+	UPROPERTY(EditDefaultsOnly, Category="AI")
+	TObjectPtr<UBehaviorTree> BehaviorTreeAsset = nullptr;
 
 	UPROPERTY(EditDefaultsOnly, Category="AI")
-	TObjectPtr<UBehaviorTree> BehaviorTreeAsset;
+	TObjectPtr<UBlackboardData> BlackboardAsset = nullptr;
 
-	UPROPERTY(EditDefaultsOnly, Category="AI")
-	TObjectPtr<UBlackboardData> BlackboardAsset;
+private:
+	UPROPERTY(Transient)
+	TObjectPtr<UAICommandSubsystem> AICommandSubsystem = nullptr;
 
-public:
-	virtual ETeamAttitude::Type GetTeamAttitudeTowards(const AActor& Other) const override;
+	UPROPERTY(Transient)
+	TObjectPtr<APawn> ControlledPawn = nullptr;
+
+	FGenericTeamId TeamId = FGenericTeamId::NoTeam;
+
+	// Only used to avoid calling BT startup repeatedly during the same possession.
+	bool bStartedBehavior = false;
+
+private:
+	void EnsureSubsystemsCached();
+
+	void PropagateTeamToPawn();
+
+	void RegisterPawnAsAgent();
+	void UnregisterPawnAsAgent();
+
+	FGenericTeamId ResolveTeamFromActor(const AActor& Actor) const;
+
+	void StartBrainIfNeeded();
+	void StopBrain();
 };

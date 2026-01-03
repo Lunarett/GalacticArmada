@@ -1,20 +1,22 @@
+// Turret.cpp
+
 #include "Actors/Turret.h"
+
+#include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SphereComponent.h"
-#include "Components/SceneComponent.h"
-#include "TimerManager.h"
+#include "Components/HealthComponent.h"
 #include "Actors/ProjectileBase.h"
 #include "NiagaraFunctionLibrary.h"
-#include "Components/HealthComponent.h"
 #include "Kismet/KismetMathLibrary.h"
-#include "Player/ShipPlayerState.h"
+#include "TimerManager.h"
 
 ATurret::ATurret()
 {
 	PrimaryActorTick.bCanEverTick = true;
 
 	Root = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
-	RootComponent = Root;
+	SetRootComponent(Root);
 
 	BaseMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("BaseMesh"));
 	BaseMesh->SetupAttachment(Root);
@@ -31,6 +33,8 @@ ATurret::ATurret()
 	TargetDetectionSphere = CreateDefaultSubobject<USphereComponent>(TEXT("TargetDetectionSphere"));
 	TargetDetectionSphere->SetupAttachment(Root);
 	TargetDetectionSphere->SetSphereRadius(TargetingRange);
+	TargetDetectionSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	TargetDetectionSphere->SetGenerateOverlapEvents(true);
 
 	HealthComponent = CreateDefaultSubobject<UHealthComponent>(TEXT("HealthComponent"));
 }
@@ -39,159 +43,226 @@ void ATurret::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (HealthComponent != nullptr)
+	TargetDetectionSphere->OnComponentBeginOverlap.AddDynamic(this, &ATurret::OnTargetEnter);
+	TargetDetectionSphere->OnComponentEndOverlap.AddDynamic(this, &ATurret::OnTargetExit);
+
+	if (HealthComponent)
 	{
 		HealthComponent->OnDeath.AddDynamic(this, &ATurret::HandleDeath);
 	}
 
-	GetWorld()->GetTimerManager().SetTimer(FireTimerHandle, this, &ATurret::Fire, FireRate, true);
+	GetWorldTimerManager().SetTimer(
+		FireTimerHandle,
+		this,
+		&ATurret::Fire,
+		FireRate,
+		true
+	);
 }
 
 void ATurret::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
-	SearchForTarget();
+
+	if (!CurrentTarget)
+	{
+		SelectBestTarget();
+	}
+
 	RotateTowardsTarget(DeltaTime);
 }
 
-void ATurret::SearchForTarget()
+// --------------------------
+// Team logic
+// --------------------------
+
+ETeamAttitude::Type ATurret::GetTeamAttitudeTowards(const AActor& Other) const
 {
-	TArray<AActor*> OverlappingActors;
-	TargetDetectionSphere->GetOverlappingActors(OverlappingActors);
-
-	float ClosestDistance = TargetingRange;
-	AActor* ClosestEnemy = nullptr;
-
-	for (AActor* Actor : OverlappingActors)
+	const IGenericTeamAgentInterface* OtherTeamAgent = Cast<IGenericTeamAgentInterface>(&Other);
+	if (!OtherTeamAgent)
 	{
-		if (IsEnemy(Actor))
-		{
-			const float Distance = FVector::Dist(Actor->GetActorLocation(), GetActorLocation());
-			if (Distance < ClosestDistance)
-			{
-				ClosestDistance = Distance;
-				ClosestEnemy = Actor;
-			}
-		}
+		return ETeamAttitude::Neutral;
 	}
 
-	CurrentTarget = ClosestEnemy;
-}
-
-void ATurret::RotateTowardsTarget(float DeltaTime)
-{
-	if (CurrentTarget == nullptr)
+	if (TeamId == OtherTeamAgent->GetGenericTeamId())
 	{
-		return;
+		return ETeamAttitude::Friendly;
 	}
 
-	const FVector YawBaseLocation = YawMesh->GetComponentLocation();
-	const FVector PitchBaseLocation = PitchMesh->GetComponentLocation();
-	const FVector TargetLocation = CurrentTarget->GetActorLocation();
-
-	// Calculate ideal rotations
-	const FRotator DesiredYawRotation = UKismetMathLibrary::FindLookAtRotation(YawBaseLocation, TargetLocation);
-	const FRotator DesiredPitchRotation = UKismetMathLibrary::FindLookAtRotation(PitchBaseLocation, TargetLocation);
-
-	// Apply yaw with offset correction
-	const float CurrentYaw = YawMesh->GetComponentRotation().Yaw;
-	const float TargetYaw = DesiredYawRotation.Yaw + YawRotationOffset;
-	const float NewYaw = FMath::FInterpConstantTo(CurrentYaw, TargetYaw, DeltaTime, YawSpeed);
-
-	YawMesh->SetWorldRotation(FRotator(0.0f, NewYaw, 0.0f));
-
-	// Apply pitch (roll of PitchMesh)
-	const float CurrentRoll = PitchMesh->GetComponentRotation().Roll;
-	const float TargetRoll = -ClampPitch(DesiredPitchRotation.Pitch); // Negative because Roll is used
-	const float NewRoll = FMath::FInterpConstantTo(CurrentRoll, TargetRoll, DeltaTime, PitchSpeed);
-
-	PitchMesh->SetRelativeRotation(FRotator(0.0f, 0.0f, NewRoll));
+	return ETeamAttitude::Hostile;
 }
 
-bool ATurret::IsTargetInLineOfFire() const
+bool ATurret::IsEnemy(const AActor* OtherActor) const
 {
-	if (CurrentTarget == nullptr)
+	if (!OtherActor || OtherActor == this)
 	{
 		return false;
 	}
 
-	const FVector MuzzleLocation = FirePoint->GetComponentLocation();
-	const FVector Direction = FirePoint->GetForwardVector();
-	const FVector ToTarget = (CurrentTarget->GetActorLocation() - MuzzleLocation).GetSafeNormal();
+	return GetTeamAttitudeTowards(*OtherActor) == ETeamAttitude::Hostile;
+}
 
-	const float AimAngle = FMath::RadiansToDegrees(acosf(FVector::DotProduct(Direction, ToTarget)));
-	return AimAngle <= FireAlignmentTolerance;
+// --------------------------
+// Overlaps
+// --------------------------
+
+void ATurret::OnTargetEnter(
+	UPrimitiveComponent*,
+	AActor* OtherActor,
+	UPrimitiveComponent*,
+	int32,
+	bool,
+	const FHitResult&
+)
+{
+	if (IsEnemy(OtherActor))
+	{
+		EnemyTargets.Add(OtherActor);
+	}
+}
+
+void ATurret::OnTargetExit(
+	UPrimitiveComponent*,
+	AActor* OtherActor,
+	UPrimitiveComponent*,
+	int32
+)
+{
+	EnemyTargets.Remove(OtherActor);
+
+	if (CurrentTarget == OtherActor)
+	{
+		CurrentTarget = nullptr;
+	}
+}
+
+// --------------------------
+// Targeting / firing
+// --------------------------
+
+void ATurret::SelectBestTarget()
+{
+	float ClosestSq = TNumericLimits<float>::Max();
+	AActor* Best = nullptr;
+
+	const FVector MyLocation = GetActorLocation();
+
+	for (AActor* Target : EnemyTargets)
+	{
+		if (!IsValid(Target))
+		{
+			continue;
+		}
+
+		const float DistSq = FVector::DistSquared(MyLocation, Target->GetActorLocation());
+		if (DistSq < ClosestSq)
+		{
+			ClosestSq = DistSq;
+			Best = Target;
+		}
+	}
+
+	CurrentTarget = Best;
+}
+
+void ATurret::RotateTowardsTarget(float DeltaTime)
+{
+	if (!CurrentTarget)
+	{
+		return;
+	}
+
+	const FVector TargetLocation = CurrentTarget->GetActorLocation();
+
+	const FRotator DesiredYaw =
+		UKismetMathLibrary::FindLookAtRotation(YawMesh->GetComponentLocation(), TargetLocation);
+
+	const float NewYaw = FMath::FInterpConstantTo(
+		YawMesh->GetComponentRotation().Yaw,
+		DesiredYaw.Yaw + YawRotationOffset,
+		DeltaTime,
+		YawSpeed
+	);
+
+	YawMesh->SetWorldRotation(FRotator(0.f, NewYaw, 0.f));
+
+	const FRotator DesiredPitch =
+		UKismetMathLibrary::FindLookAtRotation(PitchMesh->GetComponentLocation(), TargetLocation);
+
+	const float NewPitch = FMath::FInterpConstantTo(
+		PitchMesh->GetComponentRotation().Roll,
+		- ClampPitch(DesiredPitch.Pitch),
+		DeltaTime,
+		PitchSpeed
+	);
+
+	PitchMesh->SetRelativeRotation(FRotator(0.f, 0.f, NewPitch));
+}
+
+bool ATurret::IsTargetInLineOfFire() const
+{
+	if (!CurrentTarget)
+	{
+		return false;
+	}
+
+	const FVector ToTarget =
+		(CurrentTarget->GetActorLocation() - FirePoint->GetComponentLocation()).GetSafeNormal();
+
+	const float Dot = FVector::DotProduct(FirePoint->GetForwardVector(), ToTarget);
+	const float AngleDeg = FMath::RadiansToDegrees(FMath::Acos(Dot));
+
+	return AngleDeg <= FireAlignmentTolerance;
 }
 
 void ATurret::Fire()
 {
-	if (CurrentTarget == nullptr)
+	if (!CurrentTarget || !IsTargetInLineOfFire())
 	{
 		return;
 	}
 
-	if (!IsTargetInLineOfFire())
-	{
-		return;
-	}
-
-	if (ProjectileClass != nullptr)
+	if (ProjectileClass)
 	{
 		FActorSpawnParameters Params;
 		Params.Owner = this;
-		Params.Instigator = GetInstigator();
+		Params.Instigator = nullptr;
 
-		GetWorld()->SpawnActor<AProjectileBase>(ProjectileClass, FirePoint->GetComponentLocation(), FirePoint->GetComponentRotation(), Params);
+		GetWorld()->SpawnActor<AProjectileBase>(
+			ProjectileClass,
+			FirePoint->GetComponentLocation(),
+			FirePoint->GetComponentRotation(),
+			Params
+		);
 	}
 
-	if (MuzzleEffect != nullptr)
+	if (MuzzleEffect)
 	{
-		UNiagaraFunctionLibrary::SpawnSystemAtLocation(GetWorld(), MuzzleEffect, FirePoint->GetComponentLocation(), FirePoint->GetComponentRotation());
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+			GetWorld(),
+			MuzzleEffect,
+			FirePoint->GetComponentLocation(),
+			FirePoint->GetComponentRotation()
+		);
 	}
 }
 
-void ATurret::HandleDeath(AActor* DeadActor, AController* InstigatedBy, AActor* DamageCauser)
+void ATurret::HandleDeath(AActor*, AController*, AActor*)
 {
-	if (DeathEffect != nullptr)
+	if (DeathEffect)
 	{
-		UNiagaraFunctionLibrary::SpawnSystemAtLocation(GetWorld(), DeathEffect, GetActorLocation(), GetActorRotation());
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+			GetWorld(),
+			DeathEffect,
+			GetActorLocation(),
+			GetActorRotation()
+		);
 	}
 
 	Destroy();
 }
 
-bool ATurret::IsEnemy(const AActor* OtherActor) const
-{
-	if (OtherActor == nullptr || OtherActor == this)
-	{
-		return false;
-	}
-
-	const APawn* OtherPawn = Cast<APawn>(OtherActor);
-	if (OtherPawn == nullptr)
-	{
-		return false;
-	}
-
-	const AShipPlayerState* ShipPlayerState = Cast<AShipPlayerState>(OtherPawn->GetPlayerState());
-	if (ShipPlayerState == nullptr)
-	{
-		return false;
-	}
-
-	// return ShipPlayerState->GetTeamID() != TeamID;
-
-	// TODO: Change this to use proper UE team
-	return false;
-}
-
 float ATurret::ClampPitch(float DesiredPitch) const
 {
 	return FMath::Clamp(DesiredPitch, MinPitch, MaxPitch);
-}
-
-float ATurret::CalculateShortestYaw(float Current, float Target) const
-{
-	const float DeltaYaw = FMath::FindDeltaAngleDegrees(Current, Target);
-	return Current + DeltaYaw;
 }

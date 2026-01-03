@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
+#include "GenericTeamAgentInterface.h"
 #include "ShipPawn.generated.h"
 
 class USkeletalMeshComponent;
@@ -15,7 +16,7 @@ class UNiagaraComponent;
 class UShipPathComponent;
 
 UCLASS(Abstract)
-class GALACTICARMADA_API AShipPawn : public APawn
+class GALACTICARMADA_API AShipPawn : public APawn, public IGenericTeamAgentInterface
 {
 	GENERATED_BODY()
 
@@ -42,7 +43,6 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Components")
 	UHealthComponent* HealthComponent;
 
-
 	// ShipPawn - Effects
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Effects - Particles")
 	UNiagaraSystem* ExplosionParticleEffect;
@@ -57,7 +57,16 @@ private:
 	bool bIsCollisionCooldown;
 	FTimerHandle CollisionCooldownTimerHandle;
 
+	/** Pawn-owned team id (0..254 valid; 255 = NoTeam). */
+	FGenericTeamId TeamId = FGenericTeamId::NoTeam;
+
 public:
+	//~ Begin IGenericTeamAgentInterface
+	virtual FGenericTeamId GetGenericTeamId() const override;
+	virtual void SetGenericTeamId(const FGenericTeamId& NewTeamId) override;
+	virtual ETeamAttitude::Type GetTeamAttitudeTowards(const AActor& Other) const override;
+	//~ End IGenericTeamAgentInterface
+	
 	// Ship Movement Methods - Use these to control the movement of the ship
 	void SetThrottle(const float InThrottle);
 	void SetRoll(const float InRoll);
@@ -69,7 +78,7 @@ public:
 	void BeginSecondaryFire();
 	void EndPrimaryFire();
 	void EndSecondaryFire();
-
+	
 private:
 	void ClearCollisionCooldown();
 
@@ -78,7 +87,7 @@ private:
 	                     FVector NormalImpulse, const FHitResult& Hit);
 
 	UFUNCTION()
-	void  OnPawnDied(AActor* DeadActor, AController* KillerController, AActor* DamageCauser);
+	void OnPawnDied(AActor* DeadActor, AController* KillerController, AActor* DamageCauser);
 
 public:
 	FORCEINLINE UShipMovementComponent* GetShipMovementComponent() const { return ShipMovementComponent; }

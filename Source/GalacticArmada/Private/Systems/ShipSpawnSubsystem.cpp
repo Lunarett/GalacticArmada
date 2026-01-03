@@ -31,7 +31,7 @@ AShipPawn* UShipSpawnSubsystem::SpawnShip(TSubclassOf<AShipPawn> ShipClass, cons
 
 	if (UHealthComponent* Health = Ship->FindComponentByClass<UHealthComponent>())
 	{
-		Health->SetTeamId(TeamId);
+		//Health->SetTeamId(TeamId);
 	}
 
 	RegisterShip(Ship, TeamId);

@@ -51,6 +51,34 @@ AShipPawn::AShipPawn()
 	HealthComponent->OnDeath.AddDynamic(this, &AShipPawn::OnPawnDied);
 }
 
+FGenericTeamId AShipPawn::GetGenericTeamId() const
+{
+	return TeamId;
+}
+
+void AShipPawn::SetGenericTeamId(const FGenericTeamId& NewTeamId)
+{
+	TeamId = NewTeamId;
+}
+
+ETeamAttitude::Type AShipPawn::GetTeamAttitudeTowards(const AActor& Other) const
+{
+	const IGenericTeamAgentInterface* const OtherTeamAgent = Cast<IGenericTeamAgentInterface>(&Other);
+	if (!OtherTeamAgent)
+	{
+		return ETeamAttitude::Neutral;
+	}
+
+	const FGenericTeamId OtherTeam = OtherTeamAgent->GetGenericTeamId();
+
+	if (TeamId == FGenericTeamId::NoTeam || OtherTeam == FGenericTeamId::NoTeam)
+	{
+		return ETeamAttitude::Neutral;
+	}
+
+	return (TeamId == OtherTeam) ? ETeamAttitude::Friendly : ETeamAttitude::Hostile;
+}
+
 void AShipPawn::SetThrottle(const float InThrottle)
 {
 	if (ShipMovementComponent)

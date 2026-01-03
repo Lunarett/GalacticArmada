@@ -1,41 +1,12 @@
+// HealthComponent.cpp
+
 #include "Components/HealthComponent.h"
+
 #include "GameFramework/Actor.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/Pawn.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogHealthComponent, Log, All);
-
-namespace
-{
-	static void ExtractKillerInfo(AActor* InstigatorActor, AController*& OutController, AActor*& OutDamageCauser)
-	{
-		OutController = nullptr;
-		OutDamageCauser = InstigatorActor;
-
-		if (InstigatorActor == nullptr)
-		{
-			return;
-		}
-
-		if (APawn* Pawn = Cast<APawn>(InstigatorActor))
-		{
-			OutController = Pawn->GetController();
-			return;
-		}
-
-		if (AController* Controller = Cast<AController>(InstigatorActor))
-		{
-			OutController = Controller;
-			OutDamageCauser = Controller->GetPawn();
-			return;
-		}
-
-		if (APawn* OwnerPawn = Cast<APawn>(InstigatorActor->GetOwner()))
-		{
-			OutController = OwnerPawn->GetController();
-		}
-	}
-}
 
 UHealthComponent::UHealthComponent()
 {
@@ -57,89 +28,114 @@ void UHealthComponent::BeginPlay()
 
 	bIsDead = CurrentHealth <= 0.f;
 
-	AActor* Owner = GetOwner();
-
-	if (Owner != nullptr)
+	if (AActor* Owner = GetOwner())
 	{
 		Owner->OnTakeAnyDamage.AddDynamic(this, &UHealthComponent::HandleTakeAnyDamage);
 	}
-
-	UE_LOG(LogHealthComponent, Log,
-	       TEXT("Health Init: Owner=%s Max=%.2f Current=%.2f Dead=%d"),
-	       Owner ? *Owner->GetName() : TEXT("None"),
-	       MaxHealth,
-	       CurrentHealth,
-	       bIsDead ? 1 : 0);
 }
 
-void UHealthComponent::HandleTakeAnyDamage(AActor* DamagedActor, float Damage, const UDamageType* DamageType,
-                                           AController* InstigatedBy, AActor* DamageCauser)
+bool UHealthComponent::TryGetTeamFromActorOrController(const AActor* Actor, FGenericTeamId& OutTeam)
 {
-	if (Damage <= 0.f)
+	if (!Actor)
 	{
-		return;
+		return false;
 	}
 
-	if (bIsDead)
+	if (const IGenericTeamAgentInterface* TeamAgent = Cast<IGenericTeamAgentInterface>(Actor))
 	{
-		return;
+		OutTeam = TeamAgent->GetGenericTeamId();
+		return true;
 	}
 
-	int32 InstigatorTeamId = -1;
-
-	if (InstigatedBy != nullptr)
+	if (const APawn* Pawn = Cast<APawn>(Actor))
 	{
-		APawn* InstigatorPawn = InstigatedBy->GetPawn();
-
-		if (InstigatorPawn != nullptr)
+		if (const AController* C = Pawn->GetController())
 		{
-			UHealthComponent* InstigatorHealth =
-				InstigatorPawn->FindComponentByClass<UHealthComponent>();
-
-			if (InstigatorHealth != nullptr)
+			if (const IGenericTeamAgentInterface* ControllerAgent = Cast<IGenericTeamAgentInterface>(C))
 			{
-				InstigatorTeamId = InstigatorHealth->GetTeamId();
+				OutTeam = ControllerAgent->GetGenericTeamId();
+				return true;
 			}
 		}
 	}
 
-	ApplyDamage(Damage, DamageCauser, InstigatorTeamId);
+	return false;
 }
 
-void UHealthComponent::ApplyDamage(const float DamageAmount, AActor* InstigatorActor, const int32 InstigatorTeamId)
+bool UHealthComponent::TryResolveInstigatorTeam(AActor* InstigatorActor, FGenericTeamId& OutTeam)
 {
-	if (DamageAmount <= 0.f)
+	// Most common: projectile/weapon actor owned by pawn/controller
+	if (TryGetTeamFromActorOrController(InstigatorActor, OutTeam))
+	{
+		return true;
+	}
+
+	if (InstigatorActor)
+	{
+		if (TryGetTeamFromActorOrController(InstigatorActor->GetOwner(), OutTeam))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool UHealthComponent::ShouldBlockDamageAsFriendlyFire(AActor* InstigatorActor) const
+{
+	if (bAllowFriendlyFire)
+	{
+		return false;
+	}
+
+	FGenericTeamId TargetTeam = FGenericTeamId::NoTeam;
+	if (!TryGetTeamFromActorOrController(GetOwner(), TargetTeam) || TargetTeam == FGenericTeamId::NoTeam)
+	{
+		return false;
+	}
+
+	FGenericTeamId InstigatorTeam = FGenericTeamId::NoTeam;
+	if (!TryResolveInstigatorTeam(InstigatorActor, InstigatorTeam) || InstigatorTeam == FGenericTeamId::NoTeam)
+	{
+		return false;
+	}
+
+	return TargetTeam == InstigatorTeam;
+}
+
+void UHealthComponent::HandleTakeAnyDamage(
+	AActor* DamagedActor,
+	float Damage,
+	const UDamageType* DamageType,
+	AController* InstigatedBy,
+	AActor* DamageCauser
+)
+{
+	if (Damage <= 0.f || bIsDead)
 	{
 		return;
 	}
 
-	if (bIsDead)
+	// Prefer causer (weapon/projectile), fall back to controller
+	AActor* InstigatorActor = DamageCauser ? DamageCauser : Cast<AActor>(InstigatedBy);
+	ApplyDamage(Damage, InstigatorActor);
+}
+
+void UHealthComponent::ApplyDamage(float DamageAmount, AActor* InstigatorActor)
+{
+	if (DamageAmount <= 0.f || bIsDead)
 	{
 		return;
 	}
 
-	const bool bValidTeamInfo = (InstigatorTeamId != -1);
-	const bool bFriendly = bValidTeamInfo && (InstigatorTeamId == TeamId);
-
-	if (!bAllowFriendlyFire && bFriendly)
+	if (ShouldBlockDamageAsFriendlyFire(InstigatorActor))
 	{
-		UE_LOG(LogHealthComponent, Verbose,
-		       TEXT("Damage blocked (friendly fire): TargetTeam=%d InstigatorTeam=%d"),
-		       TeamId, InstigatorTeamId);
 		return;
 	}
 
-	float OldHealth = CurrentHealth;
+	const float OldHealth = CurrentHealth;
 	CurrentHealth = FMath::Clamp(CurrentHealth - DamageAmount, 0.f, MaxHealth);
-	float Delta = CurrentHealth - OldHealth;
-
-	UE_LOG(LogHealthComponent, Log,
-	       TEXT("Damage: Owner=%s Amount=%.2f NewHealth=%.2f Instigator=%s Team=%d"),
-	       GetOwner() ? *GetOwner()->GetName() : TEXT("None"),
-	       DamageAmount,
-	       CurrentHealth,
-	       InstigatorActor ? *InstigatorActor->GetName() : TEXT("None"),
-	       InstigatorTeamId);
+	const float Delta = CurrentHealth - OldHealth;
 
 	OnDamaged.Broadcast(this, DamageAmount, InstigatorActor);
 	OnHealthChanged.Broadcast(this, CurrentHealth, Delta, InstigatorActor);
@@ -150,46 +146,27 @@ void UHealthComponent::ApplyDamage(const float DamageAmount, AActor* InstigatorA
 
 		AController* KillerController = nullptr;
 		AActor* DamageCauser = nullptr;
-
 		ExtractKillerInfo(InstigatorActor, KillerController, DamageCauser);
-
-		UE_LOG(LogHealthComponent, Log,
-		       TEXT("Death: Owner=%s KillerCtrl=%s DamageCauser=%s"),
-		       GetOwner() ? *GetOwner()->GetName() : TEXT("None"),
-		       KillerController ? *KillerController->GetName() : TEXT("None"),
-		       DamageCauser ? *DamageCauser->GetName() : TEXT("None"));
 
 		OnDeath.Broadcast(GetOwner(), KillerController, DamageCauser);
 	}
 }
 
-void UHealthComponent::Heal(const float HealAmount, AActor* HealerActor)
+void UHealthComponent::Heal(float HealAmount, AActor* HealerActor)
 {
-	if (HealAmount <= 0.f)
+	if (HealAmount <= 0.f || bIsDead)
 	{
 		return;
 	}
 
-	if (bIsDead)
-	{
-		return;
-	}
-
-	float OldHealth = CurrentHealth;
+	const float OldHealth = CurrentHealth;
 	CurrentHealth = FMath::Clamp(CurrentHealth + HealAmount, 0.f, MaxHealth);
-	float Delta = CurrentHealth - OldHealth;
+	const float Delta = CurrentHealth - OldHealth;
 
 	if (Delta <= 0.f)
 	{
 		return;
 	}
-
-	UE_LOG(LogHealthComponent, Log,
-	       TEXT("Heal: Owner=%s Amount=%.2f NewHealth=%.2f Healer=%s"),
-	       GetOwner() ? *GetOwner()->GetName() : TEXT("None"),
-	       Delta,
-	       CurrentHealth,
-	       HealerActor ? *HealerActor->GetName() : TEXT("None"));
 
 	OnHealed.Broadcast(this, Delta, HealerActor);
 	OnHealthChanged.Broadcast(this, CurrentHealth, Delta, HealerActor);
@@ -207,9 +184,9 @@ void UHealthComponent::Kill(AActor* InstigatorActor)
 		return;
 	}
 
-	float OldHealth = CurrentHealth;
+	const float OldHealth = CurrentHealth;
 	CurrentHealth = 0.f;
-	float Delta = CurrentHealth - OldHealth;
+	const float Delta = CurrentHealth - OldHealth;
 
 	bIsDead = true;
 
@@ -217,26 +194,53 @@ void UHealthComponent::Kill(AActor* InstigatorActor)
 
 	AController* KillerController = nullptr;
 	AActor* DamageCauser = nullptr;
-
 	ExtractKillerInfo(InstigatorActor, KillerController, DamageCauser);
 
 	OnDeath.Broadcast(GetOwner(), KillerController, DamageCauser);
 }
 
-void UHealthComponent::SetMaxHealth(const float NewMaxHealth, const bool bClampCurrent)
+void UHealthComponent::SetMaxHealth(float NewMaxHealth, bool bClampCurrent)
 {
 	MaxHealth = FMath::Max(NewMaxHealth, 0.f);
 
 	if (bClampCurrent)
 	{
-		float OldHealth = CurrentHealth;
+		const float OldHealth = CurrentHealth;
 		CurrentHealth = FMath::Clamp(CurrentHealth, 0.f, MaxHealth);
-
-		float Delta = CurrentHealth - OldHealth;
+		const float Delta = CurrentHealth - OldHealth;
 
 		if (!FMath::IsNearlyZero(Delta))
 		{
 			OnHealthChanged.Broadcast(this, CurrentHealth, Delta, nullptr);
 		}
+	}
+}
+
+void UHealthComponent::ExtractKillerInfo(AActor* InstigatorActor, AController*& OutController, AActor*& OutDamageCauser)
+{
+	OutController = nullptr;
+	OutDamageCauser = InstigatorActor;
+
+	if (!InstigatorActor)
+	{
+		return;
+	}
+
+	if (APawn* Pawn = Cast<APawn>(InstigatorActor))
+	{
+		OutController = Pawn->GetController();
+		return;
+	}
+
+	if (AController* Controller = Cast<AController>(InstigatorActor))
+	{
+		OutController = Controller;
+		OutDamageCauser = Controller->GetPawn();
+		return;
+	}
+
+	if (APawn* OwnerPawn = Cast<APawn>(InstigatorActor->GetOwner()))
+	{
+		OutController = OwnerPawn->GetController();
 	}
 }

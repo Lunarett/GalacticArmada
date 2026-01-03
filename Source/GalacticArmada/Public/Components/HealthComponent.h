@@ -1,7 +1,10 @@
+// HealthComponent.h
+
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "GenericTeamAgentInterface.h"
 #include "HealthComponent.generated.h"
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(
@@ -51,9 +54,6 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Health")
 	bool bStartAtMaxHealth = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Team")
-	int32 TeamId = 0;
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Damage")
 	bool bAllowFriendlyFire = false;
 
@@ -77,24 +77,26 @@ protected:
 	virtual void BeginPlay() override;
 
 	UFUNCTION()
-	void HandleTakeAnyDamage(AActor* DamagedActor, float Damage, const UDamageType* DamageType,
-	                         AController* InstigatedBy, AActor* DamageCauser);
+	void HandleTakeAnyDamage(
+		AActor* DamagedActor,
+		float Damage,
+		const UDamageType* DamageType,
+		AController* InstigatedBy,
+		AActor* DamageCauser
+	);
 
 public:
 	UFUNCTION(BlueprintCallable, Category="Health")
-	void ApplyDamage(const float DamageAmount, AActor* InstigatorActor = nullptr, const int32 InstigatorTeamId = -1);
+	void ApplyDamage(float DamageAmount, AActor* InstigatorActor = nullptr);
 
 	UFUNCTION(BlueprintCallable, Category="Health")
-	void Heal(const float HealAmount, AActor* HealerActor = nullptr);
+	void Heal(float HealAmount, AActor* HealerActor = nullptr);
 
 	UFUNCTION(BlueprintCallable, Category="Health")
 	void Kill(AActor* InstigatorActor = nullptr);
 
 	UFUNCTION(BlueprintCallable, Category="Health")
-	void SetMaxHealth(const float NewMaxHealth, const bool bClampCurrent = true);
-
-	UFUNCTION(BlueprintCallable, Category="Team")
-	void SetTeamId(const int32 NewTeamId) { TeamId = NewTeamId; }
+	void SetMaxHealth(float NewMaxHealth, bool bClampCurrent = true);
 
 	UFUNCTION(BlueprintPure, Category="Health")
 	float GetMaxHealth() const { return MaxHealth; }
@@ -105,6 +107,12 @@ public:
 	UFUNCTION(BlueprintPure, Category="Health")
 	bool GetIsDead() const { return bIsDead; }
 
-	UFUNCTION(BlueprintPure, Category="Team")
-	int32 GetTeamId() const { return TeamId; }
+private:
+	bool ShouldBlockDamageAsFriendlyFire(AActor* InstigatorActor) const;
+
+	// Team helpers (no stored team data here)
+	static bool TryGetTeamFromActorOrController(const AActor* Actor, FGenericTeamId& OutTeam);
+	static bool TryResolveInstigatorTeam(AActor* InstigatorActor, FGenericTeamId& OutTeam);
+
+	static void ExtractKillerInfo(AActor* InstigatorActor, AController*& OutController, AActor*& OutDamageCauser);
 };

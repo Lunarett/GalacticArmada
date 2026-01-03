@@ -1,37 +1,41 @@
+// ShipSpawnSubsystem.cpp
+
 #include "Systems/ShipSpawnSubsystem.h"
-#include "Components/HealthComponent.h"
+
+#include "AIController.h"
 #include "Engine/World.h"
+#include "GenericTeamAgentInterface.h"
 #include "Optimization/ActorPool/ActorPoolSubsystem.h"
 #include "Player/ShipPawn.h"
 
-AShipPawn* UShipSpawnSubsystem::SpawnShip(TSubclassOf<AShipPawn> ShipClass, const FTransform& Transform, int32 TeamId, bool bSpawnController)
+AShipPawn* UShipSpawnSubsystem::SpawnShip(
+	TSubclassOf<AShipPawn> ShipClass,
+	const FTransform& Transform,
+	uint8 TeamId,
+	bool bSpawnController
+)
 {
-	if (!GetWorld() || !ShipClass)
+	if (!ShipClass || !GetWorld())
 	{
 		return nullptr;
 	}
 
-	UActorPoolSubsystem* Pool = GetWorld()->GetSubsystem<UActorPoolSubsystem>();
+	UActorPoolSubsystem* const Pool = GetWorld()->GetSubsystem<UActorPoolSubsystem>();
 	if (!Pool)
 	{
 		return nullptr;
 	}
 
-	AActor* Activated = Pool->ActivateActor(*ShipClass, Transform);
-	AShipPawn* Ship = Cast<AShipPawn>(Activated);
+	AActor* const ActivatedActor = Pool->ActivateActor(*ShipClass, Transform);
+	AShipPawn* const Ship = Cast<AShipPawn>(ActivatedActor);
 
 	if (!Ship)
 	{
-		if (Activated)
+		if (ActivatedActor)
 		{
-			Pool->DeactivateActor(Activated);
+			Pool->DeactivateActor(ActivatedActor);
 		}
 		return nullptr;
-	}
-
-	if (UHealthComponent* Health = Ship->FindComponentByClass<UHealthComponent>())
-	{
-		//Health->SetTeamId(TeamId);
 	}
 
 	RegisterShip(Ship, TeamId);
@@ -41,12 +45,14 @@ AShipPawn* UShipSpawnSubsystem::SpawnShip(TSubclassOf<AShipPawn> ShipClass, cons
 		Ship->SpawnDefaultController();
 	}
 
+	ApplyTeamToPawnAndController(Ship, TeamId);
+
 	return Ship;
 }
 
 void UShipSpawnSubsystem::DespawnShip(AShipPawn* Ship)
 {
-	if (!GetWorld() || !Ship)
+	if (!Ship || !GetWorld())
 	{
 		return;
 	}
@@ -63,7 +69,7 @@ void UShipSpawnSubsystem::DespawnShip(AShipPawn* Ship)
 	}
 }
 
-const TArray<TObjectPtr<AShipPawn>>& UShipSpawnSubsystem::GetShipsForTeam(int32 TeamId) const
+const TArray<TObjectPtr<AShipPawn>>& UShipSpawnSubsystem::GetShipsForTeam(uint8 TeamId) const
 {
 	if (const FShipTeamBucket* Bucket = ShipsByTeam.Find(TeamId))
 	{
@@ -74,28 +80,7 @@ const TArray<TObjectPtr<AShipPawn>>& UShipSpawnSubsystem::GetShipsForTeam(int32 
 	return Empty;
 }
 
-void UShipSpawnSubsystem::GetEnemyShips(int32 TeamId, TArray<AShipPawn*>& OutEnemies) const
-{
-	OutEnemies.Reset();
-
-	for (const auto& Pair : ShipsByTeam)
-	{
-		if (Pair.Key == TeamId)
-		{
-			continue;
-		}
-
-		for (AShipPawn* Ship : Pair.Value.Ships)
-		{
-			if (IsValid(Ship))
-			{
-				OutEnemies.Add(Ship);
-			}
-		}
-	}
-}
-
-void UShipSpawnSubsystem::RegisterShip(AShipPawn* Ship, int32 TeamId)
+void UShipSpawnSubsystem::RegisterShip(AShipPawn* Ship, uint8 TeamId)
 {
 	if (!Ship)
 	{
@@ -103,12 +88,7 @@ void UShipSpawnSubsystem::RegisterShip(AShipPawn* Ship, int32 TeamId)
 	}
 
 	AllShips.Add(Ship);
-
-	FShipTeamBucket& Bucket = ShipsByTeam.FindOrAdd(TeamId);
-	const int32 NewIndex = Bucket.Ships.Add(Ship);
-
-	ShipToTeamId.Add(Ship, TeamId);
-	ShipToTeamIndex.Add(Ship, NewIndex);
+	ShipsByTeam.FindOrAdd(TeamId).Ships.Add(Ship);
 }
 
 void UShipSpawnSubsystem::UnregisterShip(AShipPawn* Ship)
@@ -120,60 +100,36 @@ void UShipSpawnSubsystem::UnregisterShip(AShipPawn* Ship)
 
 	AllShips.RemoveSwap(Ship);
 
-	const int32* TeamIdPtr = ShipToTeamId.Find(Ship);
-	const int32* IndexPtr = ShipToTeamIndex.Find(Ship);
-
-	if (!TeamIdPtr || !IndexPtr)
+	for (auto It = ShipsByTeam.CreateIterator(); It; ++It)
 	{
-		// Fallback: safe slow removal if maps got desynced
-		for (auto& Pair : ShipsByTeam)
-		{
-			Pair.Value.Ships.RemoveSwap(Ship);
-		}
+		It.Value().Ships.RemoveSwap(Ship);
 
-		ShipToTeamId.Remove(Ship);
-		ShipToTeamIndex.Remove(Ship);
+		if (It.Value().Ships.Num() == 0)
+		{
+			It.RemoveCurrent();
+		}
+	}
+}
+
+void UShipSpawnSubsystem::ApplyTeamToPawnAndController(AShipPawn* Ship, uint8 TeamId)
+{
+	if (!Ship)
+	{
 		return;
 	}
 
-	const int32 TeamId = *TeamIdPtr;
-	const int32 Index = *IndexPtr;
+	const FGenericTeamId NewTeam(TeamId);
 
-	FShipTeamBucket* BucketPtr = ShipsByTeam.Find(TeamId);
-	if (!BucketPtr)
+	if (AController* Controller = Ship->GetController())
 	{
-		ShipToTeamId.Remove(Ship);
-		ShipToTeamIndex.Remove(Ship);
-		return;
-	}
-
-	TArray<TObjectPtr<AShipPawn>>& TeamShips = BucketPtr->Ships;
-
-	if (!TeamShips.IsValidIndex(Index) || TeamShips[Index] != Ship)
-	{
-		// Safety fallback: index mismatch
-		TeamShips.RemoveSwap(Ship);
-	}
-	else
-	{
-		const int32 LastIndex = TeamShips.Num() - 1;
-
-		if (Index != LastIndex)
+		if (IGenericTeamAgentInterface* TeamAgent = Cast<IGenericTeamAgentInterface>(Controller))
 		{
-			AShipPawn* SwappedShip = TeamShips[LastIndex];
-			TeamShips[Index] = SwappedShip;
-
-			ShipToTeamIndex.FindOrAdd(SwappedShip) = Index;
+			TeamAgent->SetGenericTeamId(NewTeam);
 		}
-
-		TeamShips.Pop(false);
 	}
 
-	ShipToTeamId.Remove(Ship);
-	ShipToTeamIndex.Remove(Ship);
-
-	if (TeamShips.Num() == 0)
+	if (IGenericTeamAgentInterface* PawnTeamAgent = Cast<IGenericTeamAgentInterface>(Ship))
 	{
-		ShipsByTeam.Remove(TeamId);
+		PawnTeamAgent->SetGenericTeamId(NewTeam);
 	}
 }

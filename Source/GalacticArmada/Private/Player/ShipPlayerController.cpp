@@ -6,7 +6,7 @@
 #include "Engine/World.h"
 #include "Player/ShipPawn.h"
 #include "Player/ShipPlayerCameraManager.h"
-#include "Systems/AICommandSubsystem.h"
+#include "Systems/AITargetSelectionSubsystem.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogShipPC, Log, All);
 
@@ -40,7 +40,7 @@ void AShipPlayerController::EnsureSubsystemsCached()
 		return;
 	}
 
-	AICommandSubsystem = World->GetSubsystem<UAICommandSubsystem>();
+	AICommandSubsystem = World->GetSubsystem<UAITargetSelectionSubsystem>();
 }
 
 void AShipPlayerController::PropagateTeamToPawn()

@@ -1,5 +1,3 @@
-// BTTask_MoveShipTo.h
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -33,6 +31,9 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Avoidance|Static")
 	bool bEnableStaticAvoidance = true;
 
+	UPROPERTY(EditAnywhere, Category="Avoidance|Static", meta=(ClampMin="0.05"))
+	float StaticProbeInterval = 0.5f;
+
 	UPROPERTY(EditAnywhere, Category="Avoidance|Static", meta=(ClampMin="0.0"))
 	float StaticProbeDistance = 7000.0f;
 
@@ -50,12 +51,10 @@ protected:
 
 	// -------------------------
 	// Pawn / agent avoidance
+	// (neighbors supplied by AI controller)
 	// -------------------------
 	UPROPERTY(EditAnywhere, Category="Avoidance|Pawns")
 	bool bEnablePawnAvoidance = true;
-
-	UPROPERTY(EditAnywhere, Category="Avoidance|Pawns", meta=(ClampMin="0.0"))
-	float PawnQueryRadius = 2500.0f;
 
 	UPROPERTY(EditAnywhere, Category="Avoidance|Pawns", meta=(ClampMin="0.0"))
 	float PawnSeparationDistance = 1200.0f;
@@ -87,25 +86,31 @@ protected:
 	virtual void TickTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory, float DeltaSeconds) override;
 	virtual EBTNodeResult::Type AbortTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;
 
+	virtual uint16 GetInstanceMemorySize() const override;
+
+private:
+	struct FMoveMem
+	{
+		float NextStaticProbeTime = 0.0f;
+		FVector SmoothedStaticAvoid = FVector::ZeroVector;
+		FVector SmoothedPawnAvoid = FVector::ZeroVector;
+	};
+
 private:
 	bool ResolveRefs(UBehaviorTreeComponent& OwnerComp);
 
-	bool FindClosestStaticHitAhead(const FVector& From, const FVector& Forward, FHitResult& OutHit) const;
+	bool ProbeStaticAhead(const FVector& From, const FVector& Forward, FHitResult& OutHit) const;
 
-	FVector ComputeStaticAvoidDir(float DeltaSeconds, const FVector& MyLoc, const FVector& Forward);
-	FVector ComputePawnAvoidDir(float DeltaSeconds, const FVector& MyLoc) const;
+	FVector UpdateStaticAvoid(float DeltaSeconds, float Now, FMoveMem& Mem, const FVector& MyLoc, const FVector& Forward);
+	FVector UpdatePawnAvoid(float DeltaSeconds, FMoveMem& Mem, const FVector& MyLoc) const;
 
 private:
 	UPROPERTY(Transient)
-	TObjectPtr<AShipPawn> Ship;
+	TObjectPtr<AShipPawn> Ship = nullptr;
 
 	UPROPERTY(Transient)
-	TObjectPtr<UShipMovementComponent> MovementComp;
+	TObjectPtr<UShipMovementComponent> MovementComp = nullptr;
 
-	// Smoothed contributions
-	FVector SmoothedStaticAvoidDir = FVector::ZeroVector;
-	mutable FVector SmoothedPawnAvoidDir = FVector::ZeroVector;
-
-	bool bLoggedWaitingForTarget = false;
 	bool bLoggedNoShip = false;
+	bool bLoggedWaitingForTarget = false;
 };

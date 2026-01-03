@@ -10,7 +10,7 @@ class UInputAction;
 struct FInputActionValue;
 
 class AShipPawn;
-class UAICommandSubsystem;
+class UAITargetSelectionSubsystem;
 
 /**
  * Ship player controller.
@@ -74,7 +74,7 @@ private:
 
 	/** Cached subsystem reference (resolved once; lazy init). */
 	UPROPERTY(Transient)
-	TObjectPtr<UAICommandSubsystem> AICommandSubsystem = nullptr;
+	TObjectPtr<UAITargetSelectionSubsystem> AICommandSubsystem = nullptr;
 
 	/** Controller-owned team id (0..254 valid; 255 = NoTeam). */
 	FGenericTeamId TeamId = FGenericTeamId::NoTeam;

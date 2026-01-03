@@ -4,11 +4,14 @@
 
 #include "CoreMinimal.h"
 #include "AIController.h"
+#include "GenericTeamAgentInterface.h"
+#include "UObject/WeakObjectPtr.h"
 #include "AIShipController.generated.h"
 
 class UBehaviorTree;
 class UBlackboardData;
-class UAICommandSubsystem;
+class USphereComponent;
+class UAITargetSelectionSubsystem;
 
 UCLASS()
 class GALACTICARMADA_API AAIShipController : public AAIController
@@ -18,10 +21,12 @@ class GALACTICARMADA_API AAIShipController : public AAIController
 public:
 	AAIShipController();
 
-	// AAIController already implements IGenericTeamAgentInterface
 	virtual FGenericTeamId GetGenericTeamId() const override;
 	virtual void SetGenericTeamId(const FGenericTeamId& NewTeamId) override;
 	virtual ETeamAttitude::Type GetTeamAttitudeTowards(const AActor& Other) const override;
+
+	const TArray<TWeakObjectPtr<APawn>>& GetAvoidanceNeighbors() const { return AvoidanceNeighbors; }
+	float GetAvoidanceSphereRadius() const { return AvoidanceSphereRadius; }
 
 protected:
 	virtual void OnPossess(APawn* InPawn) override;
@@ -34,22 +39,34 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category="AI")
 	TObjectPtr<UBlackboardData> BlackboardAsset = nullptr;
 
+	UPROPERTY(EditDefaultsOnly, Category="AI|Avoidance", meta=(ClampMin="0.0"))
+	float AvoidanceSphereRadius = 2500.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category="AI|Avoidance")
+	FName AvoidanceSphereAttachSocket = NAME_None;
+
 private:
 	UPROPERTY(Transient)
-	TObjectPtr<UAICommandSubsystem> AICommandSubsystem = nullptr;
+	TObjectPtr<UAITargetSelectionSubsystem> TargetSelectionSubsystem = nullptr;
 
 	UPROPERTY(Transient)
 	TObjectPtr<APawn> ControlledPawn = nullptr;
 
-	FGenericTeamId TeamId = FGenericTeamId::NoTeam;
+	UPROPERTY(Transient)
+	TObjectPtr<USphereComponent> AvoidanceSphere = nullptr;
 
-	// Only used to avoid calling BT startup repeatedly during the same possession.
+	UPROPERTY(Transient)
+	TArray<TWeakObjectPtr<APawn>> AvoidanceNeighbors;
+
+	FGenericTeamId TeamId = FGenericTeamId::NoTeam;
 	bool bStartedBehavior = false;
 
 private:
-	void EnsureSubsystemsCached();
+	void EnsureSubsystemCached();
 
-	void PropagateTeamToPawn();
+	void CreateOrAttachAvoidanceSphere();
+	void DestroyAvoidanceSphere();
+	void ClearAvoidanceNeighbors();
 
 	void RegisterPawnAsAgent();
 	void UnregisterPawnAsAgent();
@@ -58,4 +75,23 @@ private:
 
 	void StartBrainIfNeeded();
 	void StopBrain();
+
+private:
+	UFUNCTION()
+	void OnAvoidanceBeginOverlap(
+		UPrimitiveComponent* OverlappedComp,
+		AActor* OtherActor,
+		UPrimitiveComponent* OtherComp,
+		int32 OtherBodyIndex,
+		bool bFromSweep,
+		const FHitResult& SweepResult
+	);
+
+	UFUNCTION()
+	void OnAvoidanceEndOverlap(
+		UPrimitiveComponent* OverlappedComp,
+		AActor* OtherActor,
+		UPrimitiveComponent* OtherComp,
+		int32 OtherBodyIndex
+	);
 };

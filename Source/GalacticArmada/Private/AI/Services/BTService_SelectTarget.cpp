@@ -2,26 +2,24 @@
 
 #include "AIController.h"
 #include "BehaviorTree/BlackboardComponent.h"
+#include "BehaviorTree/BehaviorTreeComponent.h"
 #include "Engine/World.h"
-#include "GameFramework/Pawn.h"
 
-#include "Components/HealthComponent.h"
-#include "Player/ShipPlayerState.h"
-#include "Systems/AICommandSubsystem.h"
+#include "Systems/AITargetSelectionSubsystem.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogBTServiceSelectTarget, Log, All);
 
 UBTService_SelectTarget::UBTService_SelectTarget()
 {
-	NodeName = TEXT("Select Target (AICommandSubsystem)");
+	NodeName = TEXT("Select Target");
 
 	bNotifyBecomeRelevant = true;
-	bNotifyCeaseRelevant = true;
 	bNotifyTick = true;
 
-	Interval = 0.25f;
-	RandomDeviation = 0.05f;
-
-	CachedRegisteredTeamId = 255;
-	bHasRegistered = false;
+	// This service should be cheap: it only does work when the current target is invalid.
+	// Keep the interval relatively low-frequency.
+	Interval = 1.0f;
+	RandomDeviation = 0.0f;
 }
 
 void UBTService_SelectTarget::OnBecomeRelevant(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
@@ -30,122 +28,40 @@ void UBTService_SelectTarget::OnBecomeRelevant(UBehaviorTreeComponent& OwnerComp
 
 	AAIController* AI = nullptr;
 	APawn* Pawn = nullptr;
-
-	const bool bOk = ResolveContext(OwnerComp, AI, Pawn);
-	if (!bOk)
+	if (!ResolveContext(OwnerComp, AI, Pawn))
 	{
 		return;
 	}
 
-	UAICommandSubsystem* Subsys = GetCommandSubsystem(OwnerComp);
-	if (!Subsys)
+	if (IsCurrentTargetValid(OwnerComp))
 	{
 		return;
 	}
 
-	const uint8 TeamId = ResolveTeamId(Pawn, AI);
-	RegisterIfNeeded(Subsys, Pawn, TeamId);
-
-	if (bLog)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[SelectTarget] BecomeRelevant %s Team=%d"), *Pawn->GetName(), (int32)TeamId);
-	}
-}
-
-void UBTService_SelectTarget::OnCeaseRelevant(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
-{
-	AAIController* AI = nullptr;
-	APawn* Pawn = nullptr;
-
-	const bool bOk = ResolveContext(OwnerComp, AI, Pawn);
-	if (!bOk)
-	{
-		Super::OnCeaseRelevant(OwnerComp, NodeMemory);
-		return;
-	}
-
-	UAICommandSubsystem* Subsys = GetCommandSubsystem(OwnerComp);
-	if (!Subsys)
-	{
-		Super::OnCeaseRelevant(OwnerComp, NodeMemory);
-		return;
-	}
-
-	Subsys->UnregisterAgent(Pawn);
-
-	CachedRegisteredTeamId = 255;
-	bHasRegistered = false;
-	LastLoggedTarget.Reset();
-
-	if (bLog)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[SelectTarget] CeaseRelevant %s Unregistered"), *Pawn->GetName());
-	}
-
-	Super::OnCeaseRelevant(OwnerComp, NodeMemory);
+	RefreshTarget(OwnerComp, Pawn);
 }
 
 void UBTService_SelectTarget::TickNode(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory, float DeltaSeconds)
 {
 	Super::TickNode(OwnerComp, NodeMemory, DeltaSeconds);
 
+	// Only re-query if the current target is invalid.
+	if (IsCurrentTargetValid(OwnerComp))
+	{
+		return;
+	}
+
 	AAIController* AI = nullptr;
 	APawn* Pawn = nullptr;
-
-	const bool bOk = ResolveContext(OwnerComp, AI, Pawn);
-	if (!bOk)
+	if (!ResolveContext(OwnerComp, AI, Pawn))
 	{
 		return;
 	}
 
-	UBlackboardComponent* BB = OwnerComp.GetBlackboardComponent();
-	if (!BB)
-	{
-		return;
-	}
-
-	UAICommandSubsystem* Subsys = GetCommandSubsystem(OwnerComp);
-	if (!Subsys)
-	{
-		return;
-	}
-
-	const uint8 TeamId = ResolveTeamId(Pawn, AI);
-	RegisterIfNeeded(Subsys, Pawn, TeamId);
-
-	AActor* Assigned = Subsys->GetOrAssignTarget(Pawn, 0.0f, false);
-
-	BB->SetValueAsObject(BlackboardKey.SelectedKeyName, Assigned);
-
-	if (!bLog)
-	{
-		return;
-	}
-
-	if (LastLoggedTarget.Get() == Assigned)
-	{
-		return;
-	}
-
-	LastLoggedTarget = Assigned;
-
-	UE_LOG(LogTemp, Warning, TEXT("[SelectTarget] %s -> %s"),
-		*Pawn->GetName(),
-		Assigned ? *Assigned->GetName() : TEXT("NONE"));
+	RefreshTarget(OwnerComp, Pawn);
 }
 
-UAICommandSubsystem* UBTService_SelectTarget::GetCommandSubsystem(const UBehaviorTreeComponent& OwnerComp) const
-{
-	UWorld* World = OwnerComp.GetWorld();
-	if (!World)
-	{
-		return nullptr;
-	}
-
-	return World->GetSubsystem<UAICommandSubsystem>();
-}
-
-bool UBTService_SelectTarget::ResolveContext(UBehaviorTreeComponent& OwnerComp, AAIController*& OutAI, APawn*& OutPawn) const
+bool UBTService_SelectTarget::ResolveContext(UBehaviorTreeComponent& OwnerComp, AAIController*& OutAI, APawn*& OutPawn)
 {
 	OutAI = OwnerComp.GetAIOwner();
 	if (!OutAI)
@@ -162,89 +78,69 @@ bool UBTService_SelectTarget::ResolveContext(UBehaviorTreeComponent& OwnerComp, 
 	return true;
 }
 
-uint8 UBTService_SelectTarget::ResolveTeamId(const APawn* Pawn, const AAIController* AI) const
+UAITargetSelectionSubsystem* UBTService_SelectTarget::GetTargetSubsystem(const UBehaviorTreeComponent& OwnerComp)
 {
-	const uint8 FromHealth = ResolveTeamIdFromHealth(Pawn);
-	if (FromHealth != 0)
+	UWorld* const World = OwnerComp.GetWorld();
+	if (!World)
 	{
-		return FromHealth;
+		return nullptr;
 	}
 
-	return ResolveTeamIdFromPlayerState(AI);
+	return World->GetSubsystem<UAITargetSelectionSubsystem>();
 }
 
-uint8 UBTService_SelectTarget::ResolveTeamIdFromHealth(const APawn* Pawn) const
+bool UBTService_SelectTarget::IsCurrentTargetValid(const UBehaviorTreeComponent& OwnerComp) const
 {
-	if (!Pawn)
+	const UBlackboardComponent* const BB = OwnerComp.GetBlackboardComponent();
+	if (!BB)
 	{
-		return 0;
+		return false;
 	}
 
-	const UHealthComponent* Health = Pawn->FindComponentByClass<UHealthComponent>();
-	if (!Health)
-	{
-		return 0;
-	}
+	UObject* const Obj = BB->GetValueAsObject(BlackboardKey.SelectedKeyName);
+	AActor* const Target = Cast<AActor>(Obj);
 
-	//const int32 Team = Health->GetTeamId();
-	//return (uint8)FMath::Clamp(Team, 0, 255);
-	return 0;
+	return IsValid(Target);
 }
 
-uint8 UBTService_SelectTarget::ResolveTeamIdFromPlayerState(const AAIController* AI) const
+void UBTService_SelectTarget::RefreshTarget(UBehaviorTreeComponent& OwnerComp, APawn* ClaimerPawn)
 {
-	if (!AI)
+	UBlackboardComponent* const BB = OwnerComp.GetBlackboardComponent();
+	if (!BB)
 	{
-		return 0;
+		return;
 	}
 
-	const APlayerState* PS = AI->PlayerState;
-	if (!PS)
-	{
-		return 0;
-	}
-
-	const AShipPlayerState* ShipPS = Cast<AShipPlayerState>(PS);
-	if (!ShipPS)
-	{
-		return 0;
-	}
-
-	// const int32 Team = ShipPS->GetTeamID();
-	// return (uint8)FMath::Clamp(Team, 0, 255);
-	return 0;
-}
-
-void UBTService_SelectTarget::RegisterIfNeeded(UAICommandSubsystem* Subsys, APawn* Pawn, const uint8 TeamId)
-{
+	UAITargetSelectionSubsystem* const Subsys = GetTargetSubsystem(OwnerComp);
 	if (!Subsys)
 	{
 		return;
 	}
 
-	if (!Pawn)
+	AActor* const Assigned = Subsys->GetOrAssignTarget(ClaimerPawn);
+	if (!IsValid(Assigned))
+	{
+		BB->ClearValue(BlackboardKey.SelectedKeyName);
+		return;
+	}
+
+	UObject* const CurrentObj = BB->GetValueAsObject(BlackboardKey.SelectedKeyName);
+	AActor* const Current = Cast<AActor>(CurrentObj);
+
+	if (Current == Assigned)
 	{
 		return;
 	}
 
-	if (!bHasRegistered)
-	{
-		Subsys->RegisterAgent(Pawn, TeamId);
-		CachedRegisteredTeamId = TeamId;
-		bHasRegistered = true;
-		return;
-	}
+	BB->SetValueAsObject(BlackboardKey.SelectedKeyName, Assigned);
 
-	if (CachedRegisteredTeamId == TeamId)
+	if (bLog && LastLoggedTarget.Get() != Assigned)
 	{
-		return;
-	}
+		LastLoggedTarget = Assigned;
 
-	Subsys->RegisterAgent(Pawn, TeamId);
-	CachedRegisteredTeamId = TeamId;
-
-	if (bLog)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[SelectTarget] Re-Register %s Team=%d"), *Pawn->GetName(), (int32)TeamId);
+		UE_LOG(LogBTServiceSelectTarget, Log,
+			TEXT("SelectTarget: Claimer=%s -> Target=%s"),
+			ClaimerPawn ? *ClaimerPawn->GetName() : TEXT("None"),
+			Assigned ? *Assigned->GetName() : TEXT("None"));
 	}
 }

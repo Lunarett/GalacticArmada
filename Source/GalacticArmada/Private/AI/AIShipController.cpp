@@ -1,32 +1,21 @@
 // AIShipController.cpp
 
 #include "AI/AIShipController.h"
+
+#include "BehaviorTree/BehaviorTree.h"
+#include "BehaviorTree/BlackboardData.h"
 #include "BehaviorTree/BlackboardComponent.h"
-#include "BrainComponent.h"
+#include "Components/SphereComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
-#include "Systems/AICommandSubsystem.h"
+
+#include "Systems/AITargetSelectionSubsystem.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAIShipController, Log, All);
 
 AAIShipController::AAIShipController()
 {
-}
-
-void AAIShipController::EnsureSubsystemsCached()
-{
-	if (AICommandSubsystem)
-	{
-		return;
-	}
-
-	UWorld* const World = GetWorld();
-	if (!World)
-	{
-		return;
-	}
-
-	AICommandSubsystem = World->GetSubsystem<UAICommandSubsystem>();
+	bWantsPlayerState = false;
 }
 
 void AAIShipController::OnPossess(APawn* InPawn)
@@ -34,24 +23,163 @@ void AAIShipController::OnPossess(APawn* InPawn)
 	Super::OnPossess(InPawn);
 
 	ControlledPawn = InPawn;
-	bStartedBehavior = false;
+	ClearAvoidanceNeighbors();
 
-	EnsureSubsystemsCached();
-
-	PropagateTeamToPawn();
+	EnsureSubsystemCached();
 	RegisterPawnAsAgent();
 
+	CreateOrAttachAvoidanceSphere();
 	StartBrainIfNeeded();
 }
 
 void AAIShipController::OnUnPossess()
 {
 	StopBrain();
-	UnregisterPawnAsAgent();
+	DestroyAvoidanceSphere();
 
-	Super::OnUnPossess();
+	UnregisterPawnAsAgent();
+	ClearAvoidanceNeighbors();
 
 	ControlledPawn = nullptr;
+
+	Super::OnUnPossess();
+}
+
+void AAIShipController::EnsureSubsystemCached()
+{
+	if (TargetSelectionSubsystem)
+	{
+		return;
+	}
+
+	if (UWorld* World = GetWorld())
+	{
+		TargetSelectionSubsystem = World->GetSubsystem<UAITargetSelectionSubsystem>();
+	}
+}
+
+void AAIShipController::RegisterPawnAsAgent()
+{
+	if (!TargetSelectionSubsystem || !ControlledPawn)
+	{
+		return;
+	}
+
+	// Subsystem expects explicit team id.
+	TargetSelectionSubsystem->RegisterAgent(ControlledPawn, TeamId.GetId());
+}
+
+void AAIShipController::UnregisterPawnAsAgent()
+{
+	if (!TargetSelectionSubsystem || !ControlledPawn)
+	{
+		return;
+	}
+
+	TargetSelectionSubsystem->UnregisterAgent(ControlledPawn);
+}
+
+void AAIShipController::CreateOrAttachAvoidanceSphere()
+{
+	if (!ControlledPawn)
+	{
+		return;
+	}
+
+	if (AvoidanceSphere)
+	{
+		AvoidanceSphere->OnComponentBeginOverlap.RemoveAll(this);
+		AvoidanceSphere->OnComponentEndOverlap.RemoveAll(this);
+		AvoidanceSphere->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+		AvoidanceSphere->DestroyComponent();
+		AvoidanceSphere = nullptr;
+	}
+
+	AvoidanceSphere = NewObject<USphereComponent>(this, TEXT("AI_AvoidanceSphere"));
+	if (!AvoidanceSphere)
+	{
+		return;
+	}
+
+	AvoidanceSphere->RegisterComponent();
+
+	AvoidanceSphere->SetSphereRadius(FMath::Max(0.0f, AvoidanceSphereRadius));
+	AvoidanceSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	AvoidanceSphere->SetCollisionObjectType(ECC_WorldDynamic);
+	AvoidanceSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
+	AvoidanceSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
+
+	AvoidanceSphere->OnComponentBeginOverlap.AddDynamic(this, &AAIShipController::OnAvoidanceBeginOverlap);
+	AvoidanceSphere->OnComponentEndOverlap.AddDynamic(this, &AAIShipController::OnAvoidanceEndOverlap);
+
+	USceneComponent* AttachParent = ControlledPawn->GetRootComponent();
+	if (!AttachParent)
+	{
+		return;
+	}
+
+	AvoidanceSphere->AttachToComponent(
+		AttachParent,
+		FAttachmentTransformRules::KeepRelativeTransform,
+		AvoidanceSphereAttachSocket
+	);
+
+	AvoidanceSphere->SetRelativeLocation(FVector::ZeroVector);
+}
+
+void AAIShipController::DestroyAvoidanceSphere()
+{
+	if (!AvoidanceSphere)
+	{
+		return;
+	}
+
+	AvoidanceSphere->OnComponentBeginOverlap.RemoveAll(this);
+	AvoidanceSphere->OnComponentEndOverlap.RemoveAll(this);
+
+	AvoidanceSphere->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	AvoidanceSphere->DestroyComponent();
+	AvoidanceSphere = nullptr;
+}
+
+void AAIShipController::ClearAvoidanceNeighbors()
+{
+	AvoidanceNeighbors.Reset();
+}
+
+void AAIShipController::StartBrainIfNeeded()
+{
+	if (bStartedBehavior)
+	{
+		return;
+	}
+
+	if (!BehaviorTreeAsset || !BlackboardAsset)
+	{
+		return;
+	}
+
+	UBlackboardComponent* BBComp = nullptr;
+	if (!UseBlackboard(BlackboardAsset, BBComp))
+	{
+		return;
+	}
+
+	RunBehaviorTree(BehaviorTreeAsset);
+	bStartedBehavior = true;
+}
+
+void AAIShipController::StopBrain()
+{
+	if (!bStartedBehavior)
+	{
+		return;
+	}
+
+	if (BrainComponent)
+	{
+		BrainComponent->StopLogic(TEXT("UnPossess"));
+	}
 	bStartedBehavior = false;
 }
 
@@ -73,155 +201,110 @@ void AAIShipController::SetGenericTeamId(const FGenericTeamId& NewTeamId)
 
 	TeamId = NewTeamId;
 
-	// Keep pawn + subsystem registration in sync if we are possessing.
-	PropagateTeamToPawn();
-
-	UnregisterPawnAsAgent();
-	RegisterPawnAsAgent();
+	// If already possessed + registered, refresh registration with correct team.
+	if (ControlledPawn && TargetSelectionSubsystem)
+	{
+		TargetSelectionSubsystem->UnregisterAgent(ControlledPawn);
+		TargetSelectionSubsystem->RegisterAgent(ControlledPawn, TeamId.GetId());
+	}
 }
 
 FGenericTeamId AAIShipController::ResolveTeamFromActor(const AActor& Actor) const
 {
-	const IGenericTeamAgentInterface* const DirectTeamAgent = Cast<IGenericTeamAgentInterface>(&Actor);
-	if (DirectTeamAgent)
+	const IGenericTeamAgentInterface* DirectAgent = Cast<IGenericTeamAgentInterface>(&Actor);
+	if (DirectAgent)
 	{
-		return DirectTeamAgent->GetGenericTeamId();
+		return DirectAgent->GetGenericTeamId();
 	}
 
-	const APawn* const OtherPawn = Cast<APawn>(&Actor);
+	const APawn* OtherPawn = Cast<APawn>(&Actor);
 	if (!OtherPawn)
 	{
 		return FGenericTeamId::NoTeam;
 	}
 
-	const AController* const OtherController = OtherPawn->GetController();
+	const AController* OtherController = OtherPawn->GetController();
 	if (!OtherController)
 	{
 		return FGenericTeamId::NoTeam;
 	}
 
-	const IGenericTeamAgentInterface* const ControllerTeamAgent = Cast<IGenericTeamAgentInterface>(OtherController);
-	if (!ControllerTeamAgent)
+	const IGenericTeamAgentInterface* CtrlAgent = Cast<IGenericTeamAgentInterface>(OtherController);
+	if (!CtrlAgent)
 	{
 		return FGenericTeamId::NoTeam;
 	}
 
-	return ControllerTeamAgent->GetGenericTeamId();
+	return CtrlAgent->GetGenericTeamId();
 }
 
 ETeamAttitude::Type AAIShipController::GetTeamAttitudeTowards(const AActor& Other) const
 {
 	const FGenericTeamId OtherTeam = ResolveTeamFromActor(Other);
 
-	if (TeamId == FGenericTeamId::NoTeam)
+	if (TeamId == FGenericTeamId::NoTeam || OtherTeam == FGenericTeamId::NoTeam)
 	{
 		return ETeamAttitude::Neutral;
 	}
 
-	if (OtherTeam == FGenericTeamId::NoTeam)
-	{
-		return ETeamAttitude::Neutral;
-	}
-
-	if (TeamId == OtherTeam)
-	{
-		return ETeamAttitude::Friendly;
-	}
-
-	return ETeamAttitude::Hostile;
+	return (TeamId == OtherTeam) ? ETeamAttitude::Friendly : ETeamAttitude::Hostile;
 }
 
 // --------------------------
-// Team propagation + agent reg
+// Avoidance overlap handlers
 // --------------------------
 
-void AAIShipController::PropagateTeamToPawn()
+void AAIShipController::OnAvoidanceBeginOverlap(
+	UPrimitiveComponent* OverlappedComp,
+	AActor* OtherActor,
+	UPrimitiveComponent* OtherComp,
+	int32 OtherBodyIndex,
+	bool bFromSweep,
+	const FHitResult& SweepResult
+)
 {
-	if (!ControlledPawn)
+	(void)OverlappedComp;
+	(void)OtherComp;
+	(void)OtherBodyIndex;
+	(void)bFromSweep;
+	(void)SweepResult;
+
+	if (!OtherActor || !ControlledPawn || OtherActor == ControlledPawn)
 	{
 		return;
 	}
 
-	IGenericTeamAgentInterface* const PawnTeamAgent = Cast<IGenericTeamAgentInterface>(ControlledPawn);
-	if (!PawnTeamAgent)
+	APawn* OtherPawn = Cast<APawn>(OtherActor);
+	if (!OtherPawn)
 	{
 		return;
 	}
 
-	if (PawnTeamAgent->GetGenericTeamId() == TeamId)
+	const TWeakObjectPtr<APawn> Weak = OtherPawn;
+	if (AvoidanceNeighbors.Contains(Weak))
 	{
 		return;
 	}
 
-	PawnTeamAgent->SetGenericTeamId(TeamId);
+	AvoidanceNeighbors.Add(Weak);
 }
 
-void AAIShipController::RegisterPawnAsAgent()
+void AAIShipController::OnAvoidanceEndOverlap(
+	UPrimitiveComponent* OverlappedComp,
+	AActor* OtherActor,
+	UPrimitiveComponent* OtherComp,
+	int32 OtherBodyIndex
+)
 {
-	if (!ControlledPawn)
+	(void)OverlappedComp;
+	(void)OtherComp;
+	(void)OtherBodyIndex;
+
+	APawn* OtherPawn = Cast<APawn>(OtherActor);
+	if (!OtherPawn)
 	{
 		return;
 	}
 
-	if (!AICommandSubsystem)
-	{
-		return;
-	}
-
-	AICommandSubsystem->RegisterAgent(ControlledPawn, TeamId.GetId());
-}
-
-void AAIShipController::UnregisterPawnAsAgent()
-{
-	if (!ControlledPawn)
-	{
-		return;
-	}
-
-	if (!AICommandSubsystem)
-	{
-		return;
-	}
-
-	AICommandSubsystem->UnregisterAgent(ControlledPawn);
-}
-
-// --------------------------
-// Behavior Tree basics
-// --------------------------
-
-void AAIShipController::StartBrainIfNeeded()
-{
-	if (bStartedBehavior)
-	{
-		return;
-	}
-
-	if (!BlackboardAsset || !BehaviorTreeAsset)
-	{
-		return;
-	}
-
-	UBlackboardComponent* BBComp = nullptr;
-	if (!UseBlackboard(BlackboardAsset, BBComp))
-	{
-		return;
-	}
-
-	if (!RunBehaviorTree(BehaviorTreeAsset))
-	{
-		return;
-	}
-
-	bStartedBehavior = true;
-}
-
-void AAIShipController::StopBrain()
-{
-	bStartedBehavior = false;
-
-	if (UBrainComponent* Brain = BrainComponent)
-	{
-		Brain->StopLogic(TEXT("UnPossess"));
-	}
+	AvoidanceNeighbors.RemoveSwap(TWeakObjectPtr<APawn>(OtherPawn));
 }

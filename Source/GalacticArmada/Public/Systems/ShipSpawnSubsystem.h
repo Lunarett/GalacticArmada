@@ -1,3 +1,5 @@
+// ShipSpawnSubsystem.h
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -21,27 +23,28 @@ class GALACTICARMADA_API UShipSpawnSubsystem : public UWorldSubsystem
 	GENERATED_BODY()
 
 public:
-	AShipPawn* SpawnShip(TSubclassOf<AShipPawn> ShipClass, const FTransform& Transform, int32 TeamId, bool bSpawnController);
+	AShipPawn* SpawnShip(
+		TSubclassOf<AShipPawn> ShipClass,
+		const FTransform& Transform,
+		uint8 TeamId,
+		bool bSpawnController
+	);
+
 	void DespawnShip(AShipPawn* Ship);
 
 	const TArray<TObjectPtr<AShipPawn>>& GetAllShips() const { return AllShips; }
-
-	const TArray<TObjectPtr<AShipPawn>>& GetShipsForTeam(int32 TeamId) const;
-	void GetEnemyShips(int32 TeamId, TArray<AShipPawn*>& OutEnemies) const;
+	const TArray<TObjectPtr<AShipPawn>>& GetShipsForTeam(uint8 TeamId) const;
 
 private:
 	UPROPERTY()
 	TArray<TObjectPtr<AShipPawn>> AllShips;
 
 	UPROPERTY()
-	TMap<int32, FShipTeamBucket> ShipsByTeam;
+	TMap<uint8, FShipTeamBucket> ShipsByTeam;
 
-	UPROPERTY()
-	TMap<TObjectPtr<AShipPawn>, int32> ShipToTeamId;
-
-	UPROPERTY()
-	TMap<TObjectPtr<AShipPawn>, int32> ShipToTeamIndex;
-
-	void RegisterShip(AShipPawn* Ship, int32 TeamId);
+private:
+	void RegisterShip(AShipPawn* Ship, uint8 TeamId);
 	void UnregisterShip(AShipPawn* Ship);
+
+	static void ApplyTeamToPawnAndController(AShipPawn* Ship, uint8 TeamId);
 };
